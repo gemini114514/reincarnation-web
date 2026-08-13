@@ -119,6 +119,10 @@ const normalizeItem = (item = {}, key, index) => ({ id: String(item.id || `${key
 const classifyFlatShopItem = item => {
     if (!item || typeof item !== 'object') return null;
     if (item.升级自 || item.升级类型 || item.替换目标 || item.所属大类) return '升级列表';
+    if (item.类型 === '血统') return '血统列表';
+    if (item.类型 === '技能') return '技能列表';
+    if (item.类型 === '道具') return '道具列表';
+    if (item.类型 === '装备') return '装备列表';
     if (item.被动属性 || item.原始属性 && !item.数量 && !item.消耗 && item.类型 === undefined) return '血统列表';
     if (item.类型 === '主动' || item.类型 === '被动' || item.技能类型分类 || item.消耗 !== undefined && item.数量 === undefined && item.原始属性 === undefined) return '技能列表';
     if (VALID_SLOTS.includes(item.类型) || Number.isInteger(item.类型) && item.原始属性 || item.命中 !== undefined || item.DEF !== undefined || item.MDEF !== undefined) return '装备列表';
@@ -140,6 +144,68 @@ const entityLifeLevel = item => {
 };
 const sourceEntries = source => Object.entries(source || {}).filter(([, item]) => item && typeof item === 'object' && item.状态 !== '被夺取' && entityLifeLevel(item) > 0);
 const diceExpected = value => { const match = String(value || '').replace(/\s/g, '').match(/^(\d+)d(\d+)$/i); return match ? Number(match[1]) * (Number(match[2]) + 1) / 2 : null; };
+const numericValue = value => {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    const match = String(value ?? '').replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+    return match ? Number(match[0]) : null;
+};
+const canonicalRangeValue = (value, range) => {
+    const numeric = numericValue(value);
+    if (numeric !== null && numeric >= range[0] && (!Number.isFinite(range[1]) || numeric <= range[1])) return Math.round(numeric);
+    if (!Number.isFinite(range[1])) return Math.round(range[0]);
+    return Math.round((range[0] + range[1]) / 2);
+};
+const canonicalDice = (value, range) => {
+    const compact = String(value ?? '').replace(/\s/g, '');
+    const expected = diceExpected(compact);
+    if (expected !== null && expected >= range[0] && (!Number.isFinite(range[1]) || expected <= range[1])) return compact;
+    const upper = Number.isFinite(range[1]) ? range[1] : range[0] * 2;
+    return diceFromExpected((range[0] + upper) / 2, range[0], upper);
+};
+const canonicalPrice = (value, quality) => canonicalRangeValue(value, priceRangeForQuality(quality));
+
+// Repair boundary for both fresh API output and catalogues saved by older
+// builds.  The model is allowed to write prose only; this function is the
+// last deterministic gate before data reaches MVU/UI/localStorage.
+const repairShopItem = (item, key) => {
+    const output = deepClone(item || {});
+    const quality = normalizeQualityLetter(output.品质);
+    output.品质 = quality;
+    output.价格 = canonicalPrice(output.价格 ?? output.cost, quality);
+    if (key === '技能列表') {
+        const skill = CARD_SKILL_ITEM_RANGES[quality];
+        const damage = output.伤害 ?? output.damage ?? output.效果?.伤害;
+        output.伤害 = canonicalDice(damage, skill.技能伤害);
+        const consumeRange = RULES.技能[quality].消耗;
+        output.消耗 = String(canonicalRangeValue(output.消耗, consumeRange));
+    } else if (key === '装备列表') {
+        const slot = output.槽位 || output.部位 || output.类型 || '';
+        const weapon = output.子类型 !== '防具' && ['武器', '法术武器'].includes(slot);
+        const armorRuleName = output.防具类型 || ({ 盾: '盾牌防具', 盾牌: '盾牌防具', 铠甲: '身体防具', 胸甲: '身体防具', 头盔: '头部防具', 腿甲: '腿部防具', 腿裤: '腿部防具' }[slot] || '身体防具');
+        const rule = weapon ? RULES.武器[quality] : RULES[armorRuleName][quality];
+        if (output.命中 !== undefined && weapon) output.命中 = canonicalRangeValue(output.命中, rule.命中);
+        if (output.伤害 !== undefined && weapon) output.伤害 = canonicalDice(output.伤害, rule.期望伤害);
+        if (!weapon) {
+            if (output.DEF !== undefined) output.DEF = canonicalRangeValue(output.DEF, rule.DEF);
+            if (output.MDEF !== undefined) output.MDEF = canonicalRangeValue(output.MDEF, rule.MDEF);
+        }
+    } else if (key === '道具列表') {
+        const itemRange = CARD_SKILL_ITEM_RANGES[quality].道具HP;
+        if (Array.isArray(itemRange)) for (const field of ['HP', 'hp', '治疗', '恢复', '生命值']) if (output[field] !== undefined) output[field] = canonicalRangeValue(output[field], itemRange);
+    }
+    return output;
+};
+
+export function sanitizeShopCatalog(value) {
+    const normalized = normalizeCatalog(value);
+    for (const key of Object.values(CATEGORY_KEYS)) normalized[key] = normalized[key].map(item => repairShopItem(item, key));
+    normalized.成员商库 = normalized.成员商库 && typeof normalized.成员商库 === 'object' ? Object.fromEntries(Object.entries(normalized.成员商库).map(([name, member]) => {
+        const memberCatalog = normalizeCatalog(member);
+        for (const key of Object.values(CATEGORY_KEYS)) memberCatalog[key] = memberCatalog[key].map(item => repairShopItem(item, key));
+        return [name, memberCatalog];
+    })) : {};
+    return normalized;
+}
 const passiveUnits = { HP加成: { value: 2, cost: 1 }, MP加成: { value: 5, cost: 1 }, ATK加成: { value: 1, cost: 5 }, DEF加成: { value: 1, cost: 5 }, 法术ATK加成: { value: 1, cost: 5 }, MDEF加成: { value: 1, cost: 5 }, 豁免加成: { value: 1, cost: 3 }, 法术强度加成: { value: 2, cost: 1 } };
 const passiveBudget = stats => { const s = stats || {}; return Math.abs(num(s.HP加成)) / 2 + Math.abs(num(s.MP加成)) / 5 + Math.abs(num(s.ATK加成)) * 5 + Math.abs(num(s.DEF加成)) * 5 + Math.abs(num(s.法术ATK加成)) * 5 + Math.abs(num(s.MDEF加成)) * 5 + Math.abs(num(s.豁免加成)) * 3 + Math.abs(num(s.法术强度加成)) / 2; };
 const upgradePassive = (sourceStats, targetBudget, rank, rng) => { const ps = deepClone(sourceStats || {}); const oldBudget = passiveBudget(ps); if (oldBudget <= 0) return bloodlineStats(targetBudget, rank); const preferred = Object.keys(passiveUnits).filter(key => num(ps[key]) > 0); let index = 0; while (passiveBudget(ps) < targetBudget && index < 200) { let key = preferred.length ? preferred[index % preferred.length] : rank % 2 === 0 ? 'HP加成' : 'MP加成'; let unit = passiveUnits[key]; const remaining = targetBudget - passiveBudget(ps); if (unit.cost > remaining && remaining < 5) { key = 'HP加成'; unit = passiveUnits[key]; } ps[key] = num(ps[key]) + unit.value; index += 1; } return ps; };
@@ -254,7 +320,8 @@ const skillTypeNumber = item => item.技能类型分类 === '被动' || item.类
 const convertShopItem = (item = {}) => {
     const id = item.id;
     if (item.类型 === '技能' || item._forgeType === '技能') {
-        return appendUpgradeFields({ ...(id ? { id } : {}), 名称: String(item.名称 ?? ''), 品质: normalizeQualityLetter(item.品质), 类型: skillTypeNumber(item), 消耗: String(item.消耗 ?? 0), ...(item.标签?.length ? { 标签: unique(item.标签) } : {}), 效果: itemEffectRecord(item.效果 || (item.伤害 ? { 伤害: item.伤害, 伤害属性: item.伤害属性 || '' } : null)), 描述: String(item.描述 ?? ''), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
+        const effects = itemEffectRecord(item.效果 || (item.伤害 ? { 伤害: item.伤害, 伤害属性: item.伤害属性 || '' } : null));
+        return appendUpgradeFields({ ...(id ? { id } : {}), 名称: String(item.名称 ?? ''), 品质: normalizeQualityLetter(item.品质), 类型: skillTypeNumber(item), ...(item.伤害 != null ? { 伤害: item.伤害 } : {}), ...(item.伤害属性 != null ? { 伤害属性: String(item.伤害属性) } : {}), 消耗: String(item.消耗 ?? 0), ...(item.标签?.length ? { 标签: unique(item.标签) } : {}), 效果: effects, 描述: String(item.描述 ?? ''), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
     }
     if (item.类型 === '血统' || item._forgeType === '血统') {
         const passive = compactPassiveStats(item.被动属性 || {});
@@ -275,7 +342,7 @@ const convertShopItem = (item = {}) => {
             else if (armor) Object.assign(raw, { DEF: quality, MDEF: quality });
         }
         const tags = unique([...(item.标签 || []), slot]);
-        return appendUpgradeFields({ ...(id ? { id } : {}), 名称: item.名称, 品质: quality, 类型: EQUIPMENT_TYPE_BY_SLOT[slot] ?? 7, 原始属性: raw, 效果: itemEffectRecord(item.效果 || item.特效), 描述: String(item.描述 ?? ''), ...(tags.length ? { 标签: tags } : {}), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
+        return appendUpgradeFields({ ...(id ? { id } : {}), 名称: item.名称, 品质: quality, 类型: EQUIPMENT_TYPE_BY_SLOT[slot] ?? 7, 原始属性: raw, ...(item.命中 != null ? { 命中: item.命中 } : {}), ...(item.伤害 != null ? { 伤害: item.伤害 } : {}), ...(item.DEF != null ? { DEF: item.DEF } : {}), ...(item.MDEF != null ? { MDEF: item.MDEF } : {}), 效果: itemEffectRecord(item.效果 || item.特效), 描述: String(item.描述 ?? ''), ...(tags.length ? { 标签: tags } : {}), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
     }
     if (item.类型 === '道具' || item._forgeType === '道具') {
         return appendUpgradeFields({ ...(id ? { id } : {}), 名称: item.名称, 品质: normalizeQualityLetter(item.品质), 类型: String(item.道具类型 || item.类型 || '消耗品'), 数量: item.数量 ?? 1, 效果: itemEffectRecord(item.效果), ...(item.标签?.length ? { 标签: unique(item.标签) } : {}), 描述: String(item.描述 ?? ''), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
@@ -353,12 +420,14 @@ export function generateShopDraft({ playerLevel = 1, slotPreferences = [], targe
     const converted = emptyCatalog();
     for (const key of Object.values(CATEGORY_KEYS)) converted[key] = generated[key].map(convertShopItem);
     const catalog = normalizeCatalog(currentCatalog); for (const key of Object.values(CATEGORY_KEYS)) if (has(Object.keys(CATEGORY_KEYS).find(k => CATEGORY_KEYS[k] === key))) catalog[key] = converted[key];
-    const qualitySet = [...new Set(Object.values(converted).flatMap(items => Array.isArray(items) ? items.map(item => normalizeQualityLetter(item.品质, '')) : []).filter(Boolean))];
-    return { catalog, generated: converted, target: normalized, playerLevel: level, playerLifeLevel: lifeLevelRoman(level), qualitySet, qualityPolicy: 'independent', baseQuality: null, priceRange: null, priceRanges: Object.fromEntries(qualitySet.map(quality => [quality, priceRangeForQuality(quality)])), seed: seed256(resolvedSeed), rulesetVersion: SHOP_RULESET_VERSION, rngIndex: rng.index };
+    const safeCatalog = sanitizeShopCatalog(catalog);
+    const safeGenerated = sanitizeShopCatalog(converted);
+    const qualitySet = [...new Set(Object.values(safeGenerated).flatMap(items => Array.isArray(items) ? items.map(item => normalizeQualityLetter(item.品质, '')) : []).filter(Boolean))];
+    return { catalog: safeCatalog, generated: safeGenerated, target: normalized, playerLevel: level, playerLifeLevel: lifeLevelRoman(level), qualitySet, qualityPolicy: 'independent', baseQuality: null, priceRange: null, priceRanges: Object.fromEntries(qualitySet.map(quality => [quality, priceRangeForQuality(quality)])), seed: seed256(resolvedSeed), rulesetVersion: SHOP_RULESET_VERSION, rngIndex: rng.index };
 }
 
 export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
-    const result = normalizeCatalog(draftCatalog);
+    const result = sanitizeShopCatalog(draftCatalog);
     const incoming = normalizeCatalog(responseCatalog);
     const textFields = ['名称', '描述', '道具类型', '伤害属性'];
     for (const category of target.categories) {
@@ -374,11 +443,11 @@ export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
             return { ...deepClone(base), ...safe, id: base.id || item.id };
         });
     }
-    return result;
+    return sanitizeShopCatalog(result);
 }
 
 export function shopModelPrompt({ draft, target, playerLevel, characterName, query }) {
     const roman = lifeLevelRoman(playerLevel);
     const skillRanges = QUALITY_ORDER.map(quality => `${quality}[技能${CARD_SKILL_ITEM_RANGES[quality].技能伤害[0]}-${CARD_SKILL_ITEM_RANGES[quality].技能伤害[1]}|检定+${CARD_SKILL_ITEM_RANGES[quality].检定修正[0]}-${Number.isFinite(CARD_SKILL_ITEM_RANGES[quality].检定修正[1]) ? CARD_SKILL_ITEM_RANGES[quality].检定修正[1] : '100以上'}|道具HP ${typeof CARD_SKILL_ITEM_RANGES[quality].道具HP === 'string' ? CARD_SKILL_ITEM_RANGES[quality].道具HP : `${CARD_SKILL_ITEM_RANGES[quality].道具HP[0]}-${CARD_SKILL_ITEM_RANGES[quality].道具HP[1]}`}|状态预算${CARD_SKILL_ITEM_RANGES[quality].状态预算}]`).join('、');
-    return `你是《轮回战场》V3.2.6 卡片的 forge_shop 文案填充器。严格按嵌入卡片规则工作。生命层级是只读的生态/承载上限/权限标签，当前标签为${roman}；它与商品品质 F–SSS、五维属性品质、机制品质和价格完全独立，严禁由生命层级推导品质，也不要把生命层级改写成品质字母或数字。草案中的每件商品已经独立锁定品质、价格与数值，必须原样保留。价格区间必须严格使用 F[10,99]、E[100,999]、D[1000,4999]、C[5000,19999]、B[20000,79999]、A[80000,319999]、S[320000,1270000]、SS[1280000,5110000]、SSS[5120000,+∞]。技能/道具/状态锚点必须遵守：${skillRanges}。${target?.autonomous ? '你必须自主决定刷新目标，先输出刷新目标.categories、刷新目标.slotPreferences和刷新目标.qualityPreferences（品质偏好只允许 F/E/D/C/B/A/S/SS/SSS）；只返回你决定刷新的类别，其余列表为空。' : ''}输出单个 JSON 对象，键必须包含 刷新目标、血统列表、技能列表、装备列表、道具列表、升级列表；也兼容直接返回商品列表。效果必须是字符串值的键值记录（不得嵌套对象或数组）。只允许补全名称、标签、描述、效果、特效、伤害属性和道具类型，不得改动卡片草案中的品质、价格、原始属性、消耗或附带技能引用。当前目标：${JSON.stringify(target)}；人物：${characterName || '轮回者'}；额外要求：${query || '无'}。\n草案：${JSON.stringify(draft)}`;
+    return `你是《轮回战场》V3.2.6 卡片的 forge_shop 文案填充器。严格按嵌入卡片规则工作。生命层级是只读的生态/承载上限/权限标签，当前标签为${roman}；它与商品品质 F–SSS、五维属性品质、机制品质和价格完全独立，严禁由生命层级推导品质，也不要把生命层级改写成品质字母或数字。草案中的每件商品已经独立锁定品质、价格与数值，必须原样保留。价格区间必须严格使用 F[10,99]、E[100,999]、D[1000,4999]、C[5000,19999]、B[20000,79999]、A[80000,319999]、S[320000,1270000]、SS[1280000,5110000]、SSS[5120000,+∞]；特别是 F 级价格只能是 10–99，100 或更高都非法。技能/道具/状态锚点必须遵守：${skillRanges}。返回前逐项复核“品质→价格”和技能伤害期望值，禁止出现 F 级 2d6/2d10 这类低于 F 级技能伤害下限的旧数值。${target?.autonomous ? '你必须自主决定刷新目标，先输出刷新目标.categories、刷新目标.slotPreferences和刷新目标.qualityPreferences（品质偏好只允许 F/E/D/C/B/A/S/SS/SSS）；只返回你决定刷新的类别，其余列表为空。' : ''}输出单个 JSON 对象，键必须包含 刷新目标、血统列表、技能列表、装备列表、道具列表、升级列表；也兼容直接返回商品列表。效果必须是字符串值的键值记录（不得嵌套对象或数组）。只允许补全名称、标签、描述、效果、特效、伤害属性和道具类型，不得改动卡片草案中的品质、价格、原始属性、消耗或附带技能引用。当前目标：${JSON.stringify(target)}；人物：${characterName || '轮回者'}；额外要求：${query || '无'}。\n草案：${JSON.stringify(draft)}`;
 }

@@ -1393,6 +1393,51 @@ const attributeKeys = ['力量', '敏捷', '体质', '精神', '魅力'];
 let setupStep = 0;
 let attributePoints = Object.fromEntries(attributeKeys.map(key => [key, 0]));
 const qualityLevels = ['F', 'E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
+const PERSONAL_SHOP_PRICE_RANGES = { F: [10, 99], E: [100, 999], D: [1000, 4999], C: [5000, 19999], B: [20000, 79999], A: [80000, 319999], S: [320000, 1270000], SS: [1280000, 5110000], SSS: [5120000, Infinity] };
+const PERSONAL_SHOP_SKILL_RANGES = { F: { damage: [20, 50], consume: [5, 10] }, E: { damage: [55, 120], consume: [10, 20] }, D: { damage: [100, 250], consume: [20, 40] }, C: { damage: [220, 550], consume: [40, 60] }, B: { damage: [500, 1300], consume: [60, 90] }, A: { damage: [1100, 3000], consume: [90, 130] }, S: { damage: [2500, 6500], consume: [130, 200] }, SS: { damage: [5500, 14000], consume: [160, 250] }, SSS: { damage: [12000, 32000], consume: [200, 300] } };
+const PERSONAL_SHOP_WEAPON_RANGES = { F: { hit: [2, 2], damage: [4, 12] }, E: { hit: [3, 4], damage: [10, 22] }, D: { hit: [5, 7], damage: [18, 36] }, C: { hit: [7, 9], damage: [30, 55] }, B: { hit: [9, 11], damage: [48, 82] }, A: { hit: [11, 13], damage: [72, 115] }, S: { hit: [13, 15], damage: [105, 160] }, SS: { hit: [15, 17], damage: [150, 225] }, SSS: { hit: [17, 19], damage: [210, 320] } };
+const PERSONAL_SHOP_ARMOR_RANGES = { F: [1, 1], E: [1, 2], D: [2, 3], C: [3, 4], B: [4, 5], A: [5, 6], S: [6, 7], SS: [7, 8], SSS: [8, 9] };
+const personalShopNumber = value => { const match = String(value ?? '').replace(/,/g, '').match(/-?\d+(?:\.\d+)?/); return match ? Number(match[0]) : null; };
+const personalShopRangeValue = (value, range) => { const numeric = personalShopNumber(value); if (numeric !== null && numeric >= range[0] && (!Number.isFinite(range[1]) || numeric <= range[1])) return Math.round(numeric); return Number.isFinite(range[1]) ? Math.round((range[0] + range[1]) / 2) : Math.round(range[0]); };
+const personalShopDiceExpected = value => { const match = String(value ?? '').replace(/\s/g, '').match(/^(\d+)d(\d+)$/i); return match ? Number(match[1]) * (Number(match[2]) + 1) / 2 : null; };
+const personalShopDice = (value, range) => {
+    const compact = String(value ?? '').replace(/\s/g, ''); const expected = personalShopDiceExpected(compact);
+    if (expected !== null && expected >= range[0] && (!Number.isFinite(range[1]) || expected <= range[1])) return compact;
+    const upper = Number.isFinite(range[1]) ? range[1] : range[0] * 2; const target = (range[0] + upper) / 2; const faces = [4, 6, 8, 10, 12, 14, 16, 18, 20]; let best = { score: Infinity, count: 1, face: 4 }; let inside = null;
+    for (let count = 1; count <= Math.max(1, Math.ceil(target / 2.5) + 2); count += 1) for (const face of faces) { const exp = count * (face + 1) / 2; const candidate = { score: Math.abs(exp - target) + count * .02, count, face }; if (candidate.score < best.score) best = candidate; if (exp >= range[0] && exp <= upper && (!inside || candidate.score < inside.score)) inside = candidate; }
+    const result = inside || best; return `${result.count}d${result.face}`;
+};
+function sanitizePersonalCatalog(value) {
+    const source = value && typeof value === 'object' ? value : {}; const output = structuredClone(source); let changed = false;
+    const categoryKeys = ['血统列表', '技能列表', '装备列表', '道具列表', '升级列表'];
+    if (!categoryKeys.some(key => Array.isArray(output[key]) && output[key].length) && Array.isArray(output.商品列表)) {
+        for (const item of output.商品列表) {
+            const type = String(item?.类型 || ''); const key = item?.升级自 || item?.升级类型 || item?.替换目标 || item?.所属大类 ? '升级列表' : type === '血统' ? '血统列表' : type === '技能' || ['主动', '被动', '特殊'].includes(type) ? '技能列表' : type === '装备' || ['武器', '法术武器', '铠甲', '头盔', '腿甲', '鞋子', '盾', '饰品', '腰带'].includes(type) ? '装备列表' : '道具列表';
+            if (!Array.isArray(output[key])) output[key] = []; output[key].push(item);
+        }
+        changed = true;
+    }
+    for (const key of categoryKeys) {
+        if (!Array.isArray(output[key])) continue;
+        output[key] = output[key].map(item => {
+            const entry = { ...(item || {}) }; const quality = qualityLevels.includes(String(entry.品质 || entry.tier || '').toUpperCase()) ? String(entry.品质 || entry.tier).toUpperCase() : 'F';
+            if (entry.品质 !== quality) { entry.品质 = quality; changed = true; }
+            const range = PERSONAL_SHOP_PRICE_RANGES[quality]; const oldPrice = personalShopNumber(entry.价格 ?? entry.cost); const nextPrice = oldPrice !== null && oldPrice >= range[0] && (!Number.isFinite(range[1]) || oldPrice <= range[1]) ? Math.round(oldPrice) : personalShopRangeValue(entry.价格 ?? entry.cost, range);
+            if (Number(entry.价格) !== nextPrice) { entry.价格 = nextPrice; changed = true; }
+            if (key === '技能列表') {
+                const rules = PERSONAL_SHOP_SKILL_RANGES[quality]; const nextDamage = personalShopDice(entry.伤害 ?? entry.damage ?? entry.效果?.伤害, rules.damage); if (entry.伤害 !== nextDamage) { entry.伤害 = nextDamage; changed = true; }
+                const nextConsume = String(personalShopRangeValue(entry.消耗, rules.consume)); if (String(entry.消耗) !== nextConsume) { entry.消耗 = nextConsume; changed = true; }
+            } else if (key === '装备列表') {
+                const isWeapon = ['武器', '法术武器'].includes(entry.槽位 || entry.部位 || entry.类型) || entry.子类型 === '武器'; const rules = PERSONAL_SHOP_WEAPON_RANGES[quality];
+                if (isWeapon && entry.命中 !== undefined) { const nextHit = personalShopRangeValue(entry.命中, rules.hit); if (Number(entry.命中) !== nextHit) { entry.命中 = nextHit; changed = true; } }
+                if (isWeapon && entry.伤害 !== undefined) { const nextDamage = personalShopDice(entry.伤害, rules.damage); if (entry.伤害 !== nextDamage) { entry.伤害 = nextDamage; changed = true; } }
+                if (!isWeapon) for (const field of ['DEF', 'MDEF']) if (entry[field] !== undefined) { const next = personalShopRangeValue(entry[field], PERSONAL_SHOP_ARMOR_RANGES[quality]); if (Number(entry[field]) !== next) { entry[field] = next; changed = true; } }
+            }
+            return entry;
+        });
+    }
+    return { catalog: output, changed };
+}
 
 function renderAttributeBuilder() {
     $('#attributeBuilder').innerHTML = attributeKeys.map(key => `<div class="attribute-item"><span>${key}</span><b>${qualityLevels[attributePoints[key]]}</b><div><button type="button" data-attribute="${key}" data-delta="-1">−</button><button type="button" data-attribute="${key}" data-delta="1">＋</button></div></div>`).join('');
@@ -1438,7 +1483,14 @@ function personalShopItems() {
 }
 
 function loadPersonalShopState() {
-    const state = store.activeSession?.personalShop || { selectedIds: [], customItems: [], catalog: null, history: [], lastRefresh: null };
+    const session = store.activeSession;
+    const state = session?.personalShop || { selectedIds: [], customItems: [], catalog: null, history: [], lastRefresh: null };
+    const repaired = sanitizePersonalCatalog(state.catalog);
+    if (session && state.catalog && repaired.changed) {
+        session.personalShop = { ...state, catalog: repaired.catalog, balanceRepairAt: new Date().toISOString() };
+        store.save();
+        blackbox.record('shop', 'shop_catalog_repaired', { reason: 'legacy-catalog-balance-gate', changed: true }, { sessionId: session.id });
+    }
     selectedStarterIds = new Set(state.selectedIds || []);
     customStarterItems = structuredClone(state.customItems || []);
     personalShopExtraRequirement = String(state.extraRequirement || '');
@@ -1536,7 +1588,7 @@ async function refreshPersonalShop() {
         if (!response.ok || !body.ok) throw new Error(body.error || `刷新失败（${response.status}）`);
         personalShopRefreshStatus = '已收到模型结果，正在写入独立终端';
         const elapsedMs = Date.now() - personalShopRefreshStartedAt;
-        session.personalShop = { ...(session.personalShop || {}), extraRequirement: query, catalog: body.catalog, lastRefresh: { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel, elapsedMs }, history: [...(session.personalShop?.history || []), { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel, elapsedMs }].slice(-30) };
+        session.personalShop = { ...(session.personalShop || {}), extraRequirement: query, catalog: sanitizePersonalCatalog(body.catalog).catalog, lastRefresh: { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel, elapsedMs }, history: [...(session.personalShop?.history || []), { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel, elapsedMs }].slice(-30) };
         store.save();
         await blackbox.record('shop', 'shop_refresh_completed', { refreshId: body.refreshId, source: body.source, warnings: body.warnings, apiTrace: body.apiTrace, catalogCounts: Object.fromEntries(Object.entries(body.catalog || {}).filter(([key]) => key.endsWith('列表')).map(([key, list]) => [key, list.length])) }, { sessionId: session.id });
         toast(body.source === 'api' ? '大模型已完成个人商城刷新' : '已使用本地规则完成商城兜底刷新', body.source === 'api' ? 'success' : 'info');
@@ -1575,7 +1627,7 @@ async function forgePersonalShop(args = {}) {
     const response = await fetch('/api/shop/forge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const body = await response.json();
     if (!response.ok || !body.ok) throw new Error(body.error || `forge_shop 失败（${response.status}）`);
-    session.personalShop = { ...(session.personalShop || {}), catalog: body.catalog, lastRefresh: { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel }, history: [...(session.personalShop?.history || []), { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel }].slice(-30) };
+    session.personalShop = { ...(session.personalShop || {}), catalog: sanitizePersonalCatalog(body.catalog).catalog, lastRefresh: { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel }, history: [...(session.personalShop?.history || []), { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel }].slice(-30) };
     store.save();
     renderPersonalShop();
     await blackbox.record('shop', 'shop_forge_called', { refreshId: body.refreshId, source: body.source, target: body.target, playerLevel: body.playerLevel, apiTrace: body.apiTrace }, { sessionId: session.id });
