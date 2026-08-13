@@ -39,7 +39,7 @@ function itemId(prefix, rng) { return `${prefix}_${rng.nextUint32().toString(36)
 function diceForExpected(value) { const faces = [4, 6, 8, 10, 12, 14, 16, 18, 20]; let best = { count: 1, face: 4, score: Infinity }; for (let count = 1; count <= 12; count += 1) for (const face of faces) { const expected = count * (face + 1) / 2; const score = Math.abs(expected - value); if (score < best.score) best = { count, face, score }; } return `${best.count}d${best.face}`; }
 function bloodlineStats(budget, rank) { const stats = {}; const add = (key, amount) => { stats[key] = (stats[key] || 0) + amount; }; if (rank % 4 === 0) { add('DEF加成', Math.max(1, Math.floor(budget / 18))); add('HP加成', Math.floor(Math.max(0, budget - 5) * 2)); } else if (rank % 4 === 1) { add('ATK加成', Math.max(1, Math.floor(budget / 20))); add('HP加成', Math.floor(Math.max(0, budget - 5) * 2)); } else if (rank % 4 === 2) { add('法术ATK加成', Math.max(1, Math.floor(budget / 20))); add('法术强度加成', Math.floor(Math.max(0, budget - 5) * 2)); } else { add('豁免加成', Math.max(1, Math.floor(budget / 18))); add('MP加成', Math.floor(Math.max(0, budget - 3) * 5)); } return stats; }
 
-function normalizeTarget(target = {}) {
+export function normalizeTarget(target = {}) {
     const raw = Array.isArray(target.categories) && target.categories.length ? target.categories : target.category ? [target.category] : ['all'];
     const categories = raw.includes('all') ? Object.keys(CATEGORY_KEYS) : unique(raw).map(item => CATEGORY_ALIASES[item] || item).filter(item => CATEGORY_KEYS[item]);
     const slots = unique((Array.isArray(target.slotPreferences) && target.slotPreferences.length ? target.slotPreferences : target.slots)).filter(slot => ['武器', '法术武器', '铠甲', '头盔', '腿甲', '鞋子', '盾', '饰品', '腰带'].includes(slot));
@@ -80,5 +80,6 @@ export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
 }
 
 export function shopModelPrompt({ draft, target, playerLevel, characterName, query }) {
-    return `你是《轮回战场》V3.2.6 的主神商城内容填充器。只补全商品的名称、标签、描述、效果和自然语言消耗说明，不得修改 id、类型、等级、品质、价格、原始属性、伤害骰、命中、防御数值。只输出 JSON 对象，键必须是 血统列表、技能列表、装备列表、道具列表、升级列表；每个数组按输入顺序返回。定向刷新目标：${JSON.stringify(target)}；玩家等级：${playerLevel}；当前人物：${characterName || '轮回者'}；额外要求：${query || '无'}。商品必须符合卡片规则、品质和槽位，不能生成超出等级的数值。\n\n待填充草案：\n${JSON.stringify(draft)}`;
+    const autonomous = target?.autonomous ? '你必须先根据玩家等级、当前目录和额外要求自主决定本次刷新哪些商品大类与装备槽位。' : '';
+    return `你是《轮回战场》V3.2.6 的主神商城内容填充器。${autonomous}只补全商品的名称、标签、描述、效果和自然语言消耗说明，不得修改 id、类型、等级、品质、价格、原始属性、伤害骰、命中、防御数值。只输出 JSON 对象，键必须是 刷新目标、血统列表、技能列表、装备列表、道具列表、升级列表；刷新目标格式为 {"categories":["bloodline|skill|equipment|item|upgrade"],"slotPreferences":["武器|法术武器|铠甲|头盔|腿甲|鞋子|盾|饰品|腰带"]}。如果某类不刷新返回空数组；数组按输入顺序返回。当前候选目标：${JSON.stringify(target)}；玩家等级（只读 MVU）：${playerLevel}；当前人物：${characterName || '轮回者'}；额外要求：${query || '无'}。商品必须符合卡片规则、品质和槽位，不能生成超出等级的数值。\n\n待填充草案：\n${JSON.stringify(draft)}`;
 }

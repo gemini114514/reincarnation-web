@@ -30,7 +30,7 @@ const mock = http.createServer((request, response) => {
     let text = ''; request.on('data', chunk => { text += chunk; }); request.on('end', () => {
         const payload = JSON.parse(text); mockRequests.push(payload);
         response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ 装备列表: [{ 名称: 'API 定向烈焰刃', 标签: ['API'], 描述: '由模型补全的文案', 价格: 1, 原始属性: { 命中: 999 } }] }) } }], usage: { prompt_tokens: 42, completion_tokens: 18, total_tokens: 60 } }));
+        response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ 刷新目标: { categories: ['equipment'], slotPreferences: ['武器'] }, 装备列表: [{ 名称: 'API 定向烈焰刃', 标签: ['API'], 描述: '由模型补全的文案', 价格: 1, 原始属性: { 命中: 999 } }] }) } }], usage: { prompt_tokens: 42, completion_tokens: 18, total_tokens: 60 } }));
     });
 });
 await new Promise(resolve => mock.listen(mockPort, '127.0.0.1', resolve));
@@ -61,6 +61,13 @@ try {
     assert.equal(response.body.catalog.技能列表[0].名称, '保留技能');
     assert.ok(response.body.catalog.成员商库['测试轮回者']);
     assert.ok(mockRequests[0].max_tokens >= 30000);
+
+    const auto = await requestJson(null, appPort, '/api/shop/refresh', { characterName: '模型决策', playerLevel: 12, seed: 'auto-seed', target: { autonomous: true, categories: ['all'], query: '只要近战武器' }, connection: { baseUrl: `http://127.0.0.1:${mockPort}`, path: '/v1/chat/completions', protocol: 'openai-chat', model: 'mock', apiKey: 'secret' } });
+    assert.equal(auto.status, 200);
+    assert.equal(auto.body.source, 'api');
+    assert.deepEqual(auto.body.target.categories, ['equipment']);
+    assert.ok(auto.body.catalog.装备列表.length > 0);
+    assert.equal(auto.body.catalog.技能列表.length, 0);
 
     const slotsAlias = await requestJson(null, appPort, '/api/shop/refresh', { characterName: '槽位别名', playerLevel: 12, seed: 'slots-alias', target: { categories: ['equipment'], slots: ['盾'] } });
     assert.equal(slotsAlias.status, 200);

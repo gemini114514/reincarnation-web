@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { readCharacterCard } from './lib/card.js';
 import vm from 'node:vm';
 import { createCombatRouter } from './combat/router.js';
-import { generateShopDraft, mergeApiCatalog, shopModelPrompt } from './shop/engine.js';
+import { generateShopDraft, mergeApiCatalog, normalizeTarget, shopModelPrompt } from './shop/engine.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const cardPath = path.join(root, 'card', 'V3.2.6.png');
@@ -198,14 +198,18 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
     const toolArgs = body.args && typeof body.args === 'object' ? body.args : {};
     const connection = body.connection && typeof body.connection === 'object' ? body.connection : body;
     const characterName = String(body.characterName || body.playerName || '轮回者').trim().slice(0, 80) || '轮回者';
+    const shopController = new AbortController();
+    const shopTimeout = setTimeout(() => shopController.abort(new Error('商城模型请求超过 300 秒')), 300000);
+    res.on('close', () => { if (!res.writableEnded) shopController.abort(new Error('客户端取消商城刷新')); });
     try {
         const playerLevel = Number(body.playerLevel || body.level || toolArgs.玩家等级 || 1);
         const target = body.target && typeof body.target === 'object' ? body.target : {};
         const slotPreferences = Array.isArray(body.slotPreferences) && body.slotPreferences.length ? body.slotPreferences : (Array.isArray(toolArgs.槽位偏好) ? toolArgs.槽位偏好 : (Array.isArray(target.slotPreferences) && target.slotPreferences.length ? target.slotPreferences : (Array.isArray(target.slots) ? target.slots : [])));
+        const autonomousTarget = Boolean(target.autonomous || target.modelDecides || target.categories?.includes('all'));
         const draft = generateShopDraft({
             playerLevel,
             slotPreferences,
-            target,
+            target: autonomousTarget ? { ...target, categories: ['all'] } : target,
             seed: body.seed || `${characterName}:${playerLevel}:${JSON.stringify(target)}`,
             hero: body.hero || {},
             currentCatalog: body.currentCatalog || {},
@@ -217,7 +221,7 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
         const model = String(connection.model || '').trim();
         if (model && connection.baseUrl) {
             try {
-                const prompt = shopModelPrompt({ draft: draft.generated, target: draft.target, playerLevel: draft.playerLevel, characterName, query: draft.target.query });
+                const prompt = shopModelPrompt({ draft: draft.generated, target: autonomousTarget ? { ...draft.target, autonomous: true } : draft.target, playerLevel: draft.playerLevel, characterName, query: draft.target.query });
                 const presetContext = Array.isArray(body.preset?.prompts) ? body.preset.prompts.filter(item => item && item.content).map(item => `[${item.role || 'system'}] ${item.content}`).join('\n\n').slice(0, 16000) : '';
                 apiTrace = { model, protocol: connection.protocol || 'openai-chat', prompt, presetChars: presetContext.length };
                 const upstream = await fetch(`http://127.0.0.1:${port}/api/chat`, {
@@ -232,13 +236,19 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
                             { role: 'user', content: prompt },
                         ],
                     }),
-                    signal: AbortSignal.timeout(300000),
+                    signal: shopController.signal,
                 });
                 const responseBody = await upstream.json().catch(() => ({}));
                 if (!upstream.ok) throw new Error(responseBody.error?.message || responseBody.error || `模型请求失败（${upstream.status}）`);
                 const rawContent = responseBody.choices?.[0]?.message?.content || responseBody.output_text || '';
                 const content = Array.isArray(rawContent) ? rawContent.map(item => typeof item === 'string' ? item : item?.text || '').join('') : rawContent;
-                catalog = mergeApiCatalog(draft.catalog, parseJsonObject(content), draft.target);
+                const responseCatalog = parseJsonObject(content);
+                const modelSelection = responseCatalog.刷新目标 || responseCatalog.refreshTarget || responseCatalog.target || {};
+                const modelTarget = autonomousTarget ? normalizeTarget({ ...modelSelection, categories: modelSelection.categories || modelSelection.分类 || modelSelection.category || modelSelection.categories列表 }) : draft.target;
+                const selectedTarget = autonomousTarget && modelTarget.categories.length ? modelTarget : draft.target;
+                const selectedDraft = autonomousTarget && selectedTarget.categories.join(',') !== draft.target.categories.join(',') ? generateShopDraft({ playerLevel, slotPreferences: selectedTarget.slots, target: selectedTarget, seed: body.seed, hero: body.hero || {}, currentCatalog: body.currentCatalog || {} }) : draft;
+                catalog = mergeApiCatalog(selectedDraft.catalog, responseCatalog, selectedTarget);
+                draft.target = selectedTarget;
                 source = 'api';
                 apiTrace.usage = responseBody.usage || responseBody.usageMetadata || null;
             } catch (error) {
@@ -268,7 +278,9 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
             apiTrace,
         });
     } catch (error) {
-        res.status(400).json({ ok: false, error: error.message });
+        if (!res.headersSent) res.status(error.name === 'AbortError' ? 499 : 400).json({ ok: false, error: error.message });
+    } finally {
+        clearTimeout(shopTimeout);
     }
 });
 
