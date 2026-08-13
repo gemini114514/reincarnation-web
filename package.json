@@ -19,7 +19,8 @@
     "test:opening-live": "node scripts/test-opening-live.mjs",
     "test:soak": "node scripts/soak-10-turns.mjs",
     "test:combat": "node scripts/test-vibe-combat.mjs && node scripts/test-vibe-combat-api.mjs",
-    "test:combat-ui": "node scripts/test-vibe-combat-ui.mjs"
+    "test:combat-ui": "node scripts/test-vibe-combat-ui.mjs",
+    "test:shop": "node scripts/test-shop-refresh.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",

@@ -87,7 +87,7 @@ export class GameStore extends EventTarget {
                 connections: Array.isArray(saved?.connections) ? saved.connections : [],
                 sessions: Array.isArray(saved?.sessions) ? saved.sessions : [],
             };
-            data.sessions = data.sessions.map(session => ({ ...session, personalShop: { selectedIds: [], customItems: [], ...(session.personalShop || {}) }, variables: migrateVariables(session.variables), variableSnapshots: (session.variableSnapshots || []).map(snapshot => ({ ...snapshot, variables: migrateVariables(snapshot.variables) })) }));
+            data.sessions = data.sessions.map(session => ({ ...session, personalShop: { selectedIds: [], customItems: [], catalog: null, history: [], lastRefresh: null, ...(session.personalShop || {}) }, variables: migrateVariables(session.variables), variableSnapshots: (session.variableSnapshots || []).map(snapshot => ({ ...snapshot, variables: migrateVariables(snapshot.variables) })) }));
             data.settings.maxTokens = Math.max(30000, Number(data.settings.maxTokens) || 32768);
             data.connections = data.connections.map(connection => ({ ...connection, maxTokens: Math.max(30000, Number(connection.maxTokens) || 32768) }));
             localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
@@ -114,7 +114,7 @@ export class GameStore extends EventTarget {
             createdAt: now,
             updatedAt: now,
             messages: firstMessage ? [{ id: crypto.randomUUID(), role: 'assistant', content: firstMessage, createdAt: now, swipes: [firstMessage], swipeIndex: 0 }] : [],
-            personalShop: { selectedIds: [], customItems: [] },
+            personalShop: { selectedIds: [], customItems: [], catalog: null, history: [], lastRefresh: null },
             variables: migrateVariables(variables),
             variableSnapshots: [],
         };

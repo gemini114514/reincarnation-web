@@ -43,6 +43,9 @@ let setupShopRarity = 'all';
 let personalShopCategory = 'all';
 let personalShopRarity = 'all';
 let personalShopSearch = '';
+let personalShopTargetCategory = 'all';
+let personalShopSlots = new Set();
+let personalShopRefreshBusy = false;
 const storyFloorBySession = new Map();
 let combatState = null;
 let combatEvents = [];
@@ -990,6 +993,8 @@ function installPresetBridge() {
             const blob = new Blob([JSON.stringify(rawFromPresetBridge(presetBridgeValue(preset)), null, 2)], { type: 'application/json' });
             const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${preset.name}.json`; link.click(); URL.revokeObjectURL(link.href); return true;
         },
+        forgeShop: forgePersonalShop,
+        forge_shop: forgePersonalShop,
     };
     Object.assign(window, api);
     Object.assign(window.TavernHelper, api);
@@ -1111,6 +1116,8 @@ async function executeAssistantScript(script) {
         renamePreset: window.renamePreset, exportPreset: window.exportPreset,
         generate: options => callExtraModel(options?.prompt || options?.messages || options, options || {}),
         generateRaw: options => callExtraModel(options?.prompt || options?.messages || options, options || {}),
+        forgeShop: forgePersonalShop,
+        forge_shop: forgePersonalShop,
         eventOn: window.eventOn, eventEmit: window.eventEmit, waitGlobalInitialized: window.waitGlobalInitialized,
         getUserName: () => store.data.settings.userName, getCharName: () => runtime.card.name,
     });
@@ -1227,15 +1234,44 @@ function starterItems() {
     ];
 }
 
+function personalCatalogItems() {
+    const catalog = store.activeSession?.personalShop?.catalog;
+    if (!catalog) return [];
+    const mapping = [['血统列表', 'bloodline'], ['技能列表', 'skill'], ['装备列表', 'equipment'], ['道具列表', 'item'], ['升级列表', 'upgrade']];
+    return mapping.flatMap(([key, category]) => (Array.isArray(catalog[key]) ? catalog[key] : []).map((entry, index) => ({
+        ...entry,
+        id: `shop:${category}:${entry.id || index + 1}`,
+        name: entry.名称 || entry.name || '未命名商品',
+        tier: entry.品质 || entry.tier || 'F',
+        cost: Number(entry.价格 ?? entry.cost ?? 0),
+        desc: entry.描述 || entry.desc || '',
+        tags: entry.标签 || entry.tags || [],
+        attrs: entry.原始属性 || entry.attrs || {},
+        effects: entry.效果 || entry.effects || {},
+        consume: entry.消耗 || entry.consume || '',
+        _cat: category,
+        _shopGenerated: true,
+        _catalogEntry: entry,
+    })));
+}
+
+function personalShopItems() {
+    const generated = personalCatalogItems();
+    if (!generated.length) return starterItems();
+    // 首次刷新后以个人目录为准；此前已选的开局兑换仍保留在购物车，避免刷新造成购买状态丢失。
+    return [...generated, ...starterItems().filter(item => selectedStarterIds.has(item.id))];
+}
+
 function loadPersonalShopState() {
-    const state = store.activeSession?.personalShop || { selectedIds: [], customItems: [] };
+    const state = store.activeSession?.personalShop || { selectedIds: [], customItems: [], catalog: null, history: [], lastRefresh: null };
     selectedStarterIds = new Set(state.selectedIds || []);
     customStarterItems = structuredClone(state.customItems || []);
 }
 
 function persistPersonalShopState() {
     const session = store.activeSession; if (!session) return;
-    session.personalShop = { selectedIds: [...selectedStarterIds], customItems: structuredClone(customStarterItems), updatedAt: new Date().toISOString() };
+    const state = session.personalShop || {};
+    session.personalShop = { ...state, selectedIds: [...selectedStarterIds], customItems: structuredClone(customStarterItems), history: structuredClone(state.history || []), updatedAt: new Date().toISOString() };
     store.save();
 }
 
@@ -1253,10 +1289,15 @@ function shopBalance() {
     return Number(openingData?.initSpaceCoins || 1000) - selectedCost;
 }
 
-function shopItemCard(item) {
-    const selected = selectedStarterIds.has(item.id); const disabled = !selected && Number(item.cost || 0) > shopBalance();
+function personalShopBalance() {
+    const selectedCost = personalShopItems().filter(item => selectedStarterIds.has(item.id)).reduce((sum, item) => sum + Number(item.cost || 0), 0);
+    return Number(openingData?.initSpaceCoins || 1000) - selectedCost;
+}
+
+function shopItemCard(item, { personal = false } = {}) {
+    const selected = selectedStarterIds.has(item.id); const disabled = !selected && Number(item.cost || 0) > (personal ? personalShopBalance() : shopBalance());
     const properties = [item.consume && ['消耗', item.consume], item.attrs && Object.keys(item.attrs).length && ['属性', Object.entries(item.attrs).map(([key, value]) => `${key}+${value}`).join(' · ')], item.effects && Object.keys(item.effects).length && ['效果', Object.entries(item.effects).map(([key, value]) => `${key}:${plainValue(value)}`).join(' · ')]].filter(Boolean);
-    return `<button type="button" class="setup-shop-item item-card t-${escapeHtml(item.tier)} ${selected ? 'selected is-selected' : ''} ${disabled ? 'is-disabled' : ''}" data-starter-id="${escapeHtml(item.id)}" ${disabled ? 'disabled' : ''}><span class="selected-corner">已选择</span><header class="card-header"><h4 class="item-name">${escapeHtml(item.name)}</h4><span class="item-rarity">${escapeHtml(item.tier)}</span></header><div class="card-body"><p>${escapeHtml(item.desc || '暂无描述')}</p>${properties.map(([label, value]) => `<div class="item-info"><b>${label}</b><span>${escapeHtml(value)}</span></div>`).join('')}<div class="tag-list">${(item.tags || []).slice(0, 6).map(tag => `<i>${escapeHtml(tag)}</i>`).join('')}</div></div><footer><span>${escapeHtml({ equipment: '装备', item: '道具', skill: '技能' }[item._cat])}</span><b>¤ ${Number(item.cost).toLocaleString()}</b></footer></button>`;
+    return `<button type="button" class="setup-shop-item item-card t-${escapeHtml(item.tier)} ${selected ? 'selected is-selected' : ''} ${disabled ? 'is-disabled' : ''}" data-starter-id="${escapeHtml(item.id)}" ${disabled ? 'disabled' : ''}><span class="selected-corner">已选择</span><header class="card-header"><h4 class="item-name">${escapeHtml(item.name)}</h4><span class="item-rarity">${escapeHtml(item.tier)}</span></header><div class="card-body"><p>${escapeHtml(item.desc || '暂无描述')}</p>${properties.map(([label, value]) => `<div class="item-info"><b>${label}</b><span>${escapeHtml(value)}</span></div>`).join('')}<div class="tag-list">${(item.tags || []).slice(0, 6).map(tag => `<i>${escapeHtml(tag)}</i>`).join('')}</div></div><footer><span>${escapeHtml({ equipment: '装备', item: '道具', skill: '技能', bloodline: '血统', upgrade: '升级' }[item._cat] || item._cat || '兑换')}</span><b>¤ ${Number(item.cost).toLocaleString()}</b></footer></button>`;
 }
 
 function renderSetupShop() {
@@ -1265,7 +1306,7 @@ function renderSetupShop() {
     const category = setupShopCategory;
     const rarity = setupShopRarity;
     const items = starterItems().filter(item => (category === 'all' || item._cat === category) && (rarity === 'all' || item.tier === rarity) && (!query || [item.name, item.desc, ...(item.tags || [])].join(' ').toLowerCase().includes(query)));
-    $('#setupShopItems').innerHTML = items.map(shopItemCard).join('') || '<div class="empty-state">没有匹配的兑换项</div>';
+    $('#setupShopItems').innerHTML = items.map(item => shopItemCard(item)).join('') || '<div class="empty-state">没有匹配的兑换项</div>';
     const chosen = starterItems().filter(item => selectedStarterIds.has(item.id));
     $('#setupCoins').textContent = setupBalance().toLocaleString();
     $('#setupCoins').classList.toggle('negative', setupBalance() < 0);
@@ -1276,9 +1317,74 @@ function renderSetupShop() {
 function renderPersonalShop() {
     const root = $('#personalShopContent'); if (!root) return;
     if (!openingData) { root.innerHTML = '<div class="empty-state">个人商城数据库加载中…</div>'; return; }
-    const items = starterItems().filter(item => (personalShopCategory === 'all' || item._cat === personalShopCategory) && (personalShopRarity === 'all' || item.tier === personalShopRarity) && (!personalShopSearch || [item.name, item.desc, ...(item.tags || [])].join(' ').toLowerCase().includes(personalShopSearch)));
-    const chosen = starterItems().filter(item => selectedStarterIds.has(item.id));
-    root.innerHTML = `<section class="personal-shop-wallet"><div><small>PERSONAL WALLET</small><b>¤ ${shopBalance().toLocaleString()}</b></div><span>${escapeHtml(runtime.variables.stat_data?.主角?.姓名 || store.data.settings.userName || '当前人物')} · 独立终端</span></section><section class="personal-shop-layout"><aside><input data-personal-shop-search value="${escapeHtml(personalShopSearch)}" placeholder="搜索兑换项"><div>${[['all','全部分类'],['equipment','装备'],['item','道具'],['skill','技能']].map(([key,label]) => `<button data-personal-shop-category="${key}" class="${personalShopCategory === key ? 'active' : ''}">${label}</button>`).join('')}</div></aside><main><div class="personal-rarity-filter">${['all','F','E','D','C','B','A','S','SS','SSS'].map(key => `<button data-personal-shop-rarity="${key}" class="${personalShopRarity === key ? 'active' : ''}">${key === 'all' ? '全部品质' : key}</button>`).join('')}</div><div class="setup-shop-grid">${items.map(shopItemCard).join('') || '<div class="empty-state">没有匹配的兑换项</div>'}</div></main></section><section class="selected-panel personal-shop-cart"><header><div><b>当前人物购物车</b><small>选择状态随人物存档持久化</small></div><span>${chosen.length}</span></header><div>${chosen.map(item => `<button data-starter-id="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ¤${item.cost} ×</button>`).join('') || '<p>尚未选择兑换项</p>'}</div></section>`;
+    const items = personalShopItems().filter(item => (personalShopCategory === 'all' || item._cat === personalShopCategory) && (personalShopRarity === 'all' || item.tier === personalShopRarity) && (!personalShopSearch || [item.name, item.desc, ...(item.tags || [])].join(' ').toLowerCase().includes(personalShopSearch)));
+    const chosen = personalShopItems().filter(item => selectedStarterIds.has(item.id));
+    const state = store.activeSession?.personalShop || {};
+    const last = state.lastRefresh;
+    const hero = runtime.variables.stat_data?.主角 || {};
+    const level = Number(hero.等级 || hero.层级 || hero.位阶 || 1) || 1;
+    const targetOptions = [['all', '全部商品'], ['equipment', '装备'], ['skill', '技能'], ['bloodline', '血统'], ['item', '道具'], ['upgrade', '升级']];
+    const slots = ['武器', '法术武器', '铠甲', '头盔', '腿甲', '鞋子', '盾', '饰品', '腰带'];
+    const activeConnection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
+    root.innerHTML = `<section class="personal-shop-wallet"><div><small>PERSONAL WALLET</small><b>¤ ${personalShopBalance().toLocaleString()}</b></div><span>${escapeHtml(hero.姓名 || store.data.settings.userName || '当前人物')} · 独立终端</span></section><section class="personal-shop-refresh"><header><div><small>定向刷新 · forge_shop</small><b>本地规则定数值，API 负责文案</b></div><span>${escapeHtml(activeConnection?.model || '未选择 API')}</span></header><div class="shop-refresh-grid"><label>玩家等级<input id="personalShopLevel" type="number" min="1" max="50" value="${escapeHtml(level)}"></label><label>刷新目标<select id="personalShopTarget">${targetOptions.map(([key, label]) => `<option value="${key}" ${personalShopTargetCategory === key ? 'selected' : ''}>${label}</option>`).join('')}</select></label><label>数量（仅单类）<input id="personalShopCount" type="number" min="0" max="50" value="0"></label><label class="wide">额外要求<input id="personalShopQuery" value="${escapeHtml(personalShopSearch)}" placeholder="如：偏向火焰、适合近战"></label></div><div class="shop-slot-picker"><small>装备槽位偏好</small>${slots.map(slot => `<label><input type="checkbox" data-shop-slot="${escapeHtml(slot)}" ${personalShopSlots.has(slot) ? 'checked' : ''}>${escapeHtml(slot)}</label>`).join('')}</div><button type="button" class="primary-action" data-action="refresh-personal-shop" ${personalShopRefreshBusy ? 'disabled' : ''}>${personalShopRefreshBusy ? '刷新中…' : '定向刷新个人商城'}</button><small class="shop-refresh-status">${last ? `上次：${escapeHtml(last.source || 'local')} · ${escapeHtml(formatTime(last.generatedAt || last.at || Date.now()))} · seed ${escapeHtml(last.seed || '—')}` : '尚未刷新，首次可直接使用本地确定性规则生成'}</small></section><section class="personal-shop-layout"><aside><input data-personal-shop-search value="${escapeHtml(personalShopSearch)}" placeholder="搜索兑换项"><div>${[['all','全部分类'],['equipment','装备'],['item','道具'],['skill','技能'],['bloodline','血统'],['upgrade','升级']].map(([key,label]) => `<button data-personal-shop-category="${key}" class="${personalShopCategory === key ? 'active' : ''}">${label}</button>`).join('')}</div></aside><main><div class="personal-rarity-filter">${['all','F','E','D','C','B','A','S','SS','SSS'].map(key => `<button data-personal-shop-rarity="${key}" class="${personalShopRarity === key ? 'active' : ''}">${key === 'all' ? '全部品质' : key}</button>`).join('')}</div><div class="setup-shop-grid">${items.map(item => shopItemCard(item, { personal: true })).join('') || '<div class="empty-state">没有匹配的兑换项</div>'}</div></main></section><section class="selected-panel personal-shop-cart"><header><div><b>当前人物购物车</b><small>选择状态随人物存档持久化</small></div><span>${chosen.length}</span></header><div>${chosen.map(item => `<button data-starter-id="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ¤${item.cost} ×</button>`).join('') || '<p>尚未选择兑换项</p>'}</div></section>`;
+}
+
+async function refreshPersonalShop() {
+    const session = store.activeSession;
+    if (!session || personalShopRefreshBusy) return;
+    personalShopRefreshBusy = true;
+    renderPersonalShop();
+    const hero = runtime.variables.stat_data?.主角 || {};
+    const playerLevel = Math.min(50, Math.max(1, Number($('#personalShopLevel')?.value || hero.等级 || hero.层级 || 1) || 1));
+    const category = $('#personalShopTarget')?.value || personalShopTargetCategory;
+    const count = Number($('#personalShopCount')?.value || 0) || 0;
+    const query = String($('#personalShopQuery')?.value || '').trim().slice(0, 500);
+    const connection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
+    const preset = runtime.activePreset ? { name: runtime.activePreset.name, prompts: (runtime.activePreset.prompts || []).filter(item => item.enabled !== false).map(item => ({ role: item.role, content: item.content })) } : null;
+    const payload = { characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel, slotPreferences: [...personalShopSlots], target: { categories: [category], count, query }, seed: crypto.randomUUID(), hero, currentCatalog: session.personalShop?.catalog || {}, connection, preset };
+    const connectionMeta = { id: connection.id, name: connection.name, model: connection.model, protocol: connection.protocol };
+    await blackbox.record('shop', 'shop_refresh_started', { target: payload.target, playerLevel, slots: payload.slotPreferences, connection: connectionMeta }, { sessionId: session.id });
+    try {
+        const response = await fetch('/api/shop/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        const body = await response.json();
+        if (!response.ok || !body.ok) throw new Error(body.error || `刷新失败（${response.status}）`);
+        session.personalShop = { ...(session.personalShop || {}), catalog: body.catalog, lastRefresh: { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel }, history: [...(session.personalShop?.history || []), { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel }].slice(-30) };
+        store.save();
+        await blackbox.record('shop', 'shop_refresh_completed', { refreshId: body.refreshId, source: body.source, warnings: body.warnings, apiTrace: body.apiTrace, catalogCounts: Object.fromEntries(Object.entries(body.catalog || {}).filter(([key]) => key.endsWith('列表')).map(([key, list]) => [key, list.length])) }, { sessionId: session.id });
+        toast(body.source === 'api' ? '个人商城已按目标完成 API 刷新' : '个人商城已完成本地规则刷新', body.source === 'api' ? 'success' : 'info');
+        if (body.warnings?.length) toast(body.warnings[0], 'info');
+    } catch (error) {
+        await blackbox.record('shop', 'shop_refresh_failed', { error: error.message, target: payload.target, connection: connectionMeta }, { sessionId: session.id });
+        toast(`商城刷新失败：${error.message}`, 'error');
+    } finally {
+        personalShopRefreshBusy = false;
+        renderPersonalShop();
+    }
+}
+
+// 酒馆助手/卡内脚本可直接调用的 forge_shop 兼容入口。它不依赖页面焦点，结果仍只写入当前人物的独立商店存档。
+async function forgePersonalShop(args = {}) {
+    const session = store.activeSession;
+    if (!session) throw new Error('当前没有活动存档');
+    const hero = runtime.variables.stat_data?.主角 || {};
+    const connection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
+    const playerLevel = Math.min(50, Math.max(1, Number(args.玩家等级 ?? args.playerLevel ?? hero.等级 ?? hero.层级 ?? 1) || 1));
+    const slotPreferences = Array.isArray(args.槽位偏好) ? args.槽位偏好 : (Array.isArray(args.slotPreferences) ? args.slotPreferences : []);
+    const categories = Array.isArray(args.分类) ? args.分类 : (Array.isArray(args.categories) ? args.categories : ['all']);
+    const payload = {
+        characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel, slotPreferences,
+        target: { categories, count: Number(args.数量 ?? args.count ?? 0) || 0, query: String(args.要求 ?? args.query ?? '').slice(0, 500) },
+        seed: args.seed || crypto.randomUUID(), hero, currentCatalog: session.personalShop?.catalog || {}, connection,
+        preset: runtime.activePreset ? { name: runtime.activePreset.name, prompts: (runtime.activePreset.prompts || []).filter(item => item.enabled !== false).map(item => ({ role: item.role, content: item.content })) } : null,
+    };
+    const response = await fetch('/api/shop/forge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const body = await response.json();
+    if (!response.ok || !body.ok) throw new Error(body.error || `forge_shop 失败（${response.status}）`);
+    session.personalShop = { ...(session.personalShop || {}), catalog: body.catalog, lastRefresh: { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel }, history: [...(session.personalShop?.history || []), { refreshId: body.refreshId, source: body.source, seed: body.seed, generatedAt: body.generatedAt, target: body.target, playerLevel: body.playerLevel }].slice(-30) };
+    store.save();
+    renderPersonalShop();
+    await blackbox.record('shop', 'shop_forge_called', { refreshId: body.refreshId, source: body.source, target: body.target, playerLevel: body.playerLevel, apiTrace: body.apiTrace }, { sessionId: session.id });
+    return body;
 }
 
 function renderSetupPlots() {
@@ -1454,9 +1560,10 @@ function bindEvents() {
         }
         const starter = event.target.closest('[data-starter-id]');
         if (starter) {
-            const id = starter.dataset.starterId; const item = starterItems().find(entry => entry.id === id);
+            const personal = Boolean(starter.closest('#view-shop'));
+            const id = starter.dataset.starterId; const item = (personal ? personalShopItems() : starterItems()).find(entry => entry.id === id);
             if (selectedStarterIds.has(id)) selectedStarterIds.delete(id);
-            else if (item && (starter.closest('#view-shop') ? shopBalance() : setupBalance()) >= Number(item.cost || 0)) selectedStarterIds.add(id);
+            else if (item && (personal ? personalShopBalance() : setupBalance()) >= Number(item.cost || 0)) selectedStarterIds.add(id);
             else return toast('剩余空间币不足', 'error');
             persistPersonalShopState(); renderSetupShop(); renderPersonalShop(); return;
         }
@@ -1548,6 +1655,7 @@ function bindEvents() {
         }
         if (action === 'combat-narrate') { try { await narrateCombat(); } catch (error) { toast(`战报融合失败：${error.message}`, 'error'); await blackbox.record('combat', 'narration_failed', { battleId: combatState?.id, error }, { sessionId: store.activeSession?.id }); } return; }
         if (action) blackbox.record('ui', 'action_clicked', { action }, { sessionId: store.activeSession?.id });
+        if (action === 'refresh-personal-shop') { await refreshPersonalShop(); return; }
         if (action === 'toggle-rail') $('#rail').classList.toggle('open');
         if (action === 'toggle-nav-category') {
             const category = event.target.closest('.nav-category');
@@ -1934,6 +2042,10 @@ function bindEvents() {
     $('#setupForm').addEventListener('submit', submitSetup);
     $('#setupShopSearch').addEventListener('input', renderSetupShop);
     $('#personalShopContent').addEventListener('input', event => { if (event.target.matches('[data-personal-shop-search]')) { personalShopSearch = event.target.value.trim().toLowerCase(); renderPersonalShop(); requestAnimationFrame(() => { const input = $('[data-personal-shop-search]'); input?.focus(); input?.setSelectionRange(input.value.length, input.value.length); }); } });
+    $('#personalShopContent').addEventListener('change', event => {
+        if (event.target.matches('#personalShopTarget')) { personalShopTargetCategory = event.target.value; return; }
+        if (event.target.matches('[data-shop-slot]')) { const slot = event.target.dataset.shopSlot; if (event.target.checked) personalShopSlots.add(slot); else personalShopSlots.delete(slot); }
+    });
     $('#setupForm').elements.partnerEnabled.addEventListener('change', () => { renderPartnerState(); renderSetupShop(); });
     $('#setupForm').elements.partnerTier.addEventListener('change', () => { renderPartnerState(); renderSetupShop(); });
     $('#setupForm').elements.mode.forEach(input => input.addEventListener('change', renderSetupPlots));
@@ -2097,7 +2209,7 @@ async function boot() {
         $('#runtimeBadge').classList.toggle('ready', result.failed.length === 0);
         $('#runtimeBadge').innerHTML = `<i></i> ${result.failed.length ? `${total - result.failed.length}/${total} 脚本就绪` : '玩法运行时就绪'}`;
         if (result.failed.length) toast('部分远程卡片模块未加载，请检查网络；核心内置兼容层仍可运行。', 'error');
-        window.__reincarnationApp = { store, runtime, blackbox, generate, newSession, presets: () => presets, scripts: () => scripts, renderAll, renderBlackBox, getAffection: (source, target) => getAffection(runtime.variables.stat_data, source, target) };
+        window.__reincarnationApp = { store, runtime, blackbox, generate, newSession, refreshPersonalShop, forgeShop: forgePersonalShop, forge_shop: forgePersonalShop, presets: () => presets, scripts: () => scripts, renderAll, renderPersonalShop, renderBlackBox, getAffection: (source, target) => getAffection(runtime.variables.stat_data, source, target) };
         await blackbox.record('lifecycle', 'boot_completed', { activeSessionId: store.activeSession?.id, activePresetId: store.data.settings.activePresetId, activeConnectionId: store.data.settings.activeConnectionId }, { sessionId: store.activeSession?.id });
         await renderBlackBox();
     } catch (error) {

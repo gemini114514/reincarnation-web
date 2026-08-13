@@ -25,6 +25,7 @@ npm start
 - 酒馆语义正则双管线：发送模型前 Prompt 处理与消息显示 Markdown 处理，支持 placement、深度、promptOnly、markdownOnly、trim、宏替换、启停、导入和源 JSON 编辑；
 - 封面、五阶段完整建档、选项、检定和世界选择全部采用项目原生组件；开局数据库固定读取卡片指定的 V20260812 版本；
 - 完整开局折扣兑换：1000 空间币预算，56 件装备、20 个道具、19 个技能、品质/分类/搜索过滤、购买结算及自定义兑换项；
+- 个人商店独立目录支持卡片同款 `forge_shop` 定向刷新：可按玩家等级、装备槽位、商品类别、数量和文本要求刷新；本地确定性规则锁定品质、价格、伤害与防御，API/当前 AIRP 预设只负责文案，结果按 `商城` 五列表及 `成员商库` 结构持久化；兼容 `/api/shop/refresh` 与 `/api/shop/forge`；
 - 完整队友建档：Ⅰ/Ⅱ/Ⅲ级分别消耗 70/350/1000 空间币，基础档案写入 `stat_data.关系列表`，首轮按 NPC 规则补全战术模块；
 - 人物档案可持久化保存、覆盖、加载、删除、导入和导出，保存在 IndexedDB；
 - 4 个玩法脚本的数据与执行链；
@@ -62,9 +63,10 @@ npm run test:url-script
 npm run test:editor-blackbox
 npm run test:opening-mvu
 npm run test:regex
+npm run test:shop
 ```
 
-`check` 校验卡内 41/12/4 资源；`test:ui` 测试基础游戏链；`test:integrations` 真实导入秋青预设和 A4.7 脚本；`test:protocols` 通过本地模拟上游校验四种 API 请求格式；`test:url-script` 校验潮汐悬浮 UI 与 Maya 商店预设导入；`test:editor-blackbox` 校验预设往返编辑和密钥脱敏；`test:opening-mvu` 校验旧档迁移、完整建档、商店、队友、档案和 Patch 根路径；`test:regex` 校验酒馆正则双管线。`test:opening-live` 与 `test:soak` 会使用真实 API，请留意额度。
+`check` 校验卡内 41/12/4 资源；`test:ui` 测试基础游戏链；`test:integrations` 真实导入秋青预设和 A4.7 脚本；`test:protocols` 通过本地模拟上游校验四种 API 请求格式；`test:url-script` 校验潮汐悬浮 UI 与 Maya 商店预设导入；`test:editor-blackbox` 校验预设往返编辑和密钥脱敏；`test:opening-mvu` 校验旧档迁移、完整建档、商店、队友、档案和 Patch 根路径；`test:regex` 校验酒馆正则双管线；`test:shop` 校验 `forge_shop` 参数兼容、定向合并、数值防篡改和本地兜底。`test:opening-live` 与 `test:soak` 会使用真实 API，请留意额度。
 
 ## 目录
 
@@ -73,6 +75,7 @@ npm run test:regex
 - `src/store.js`：本地轮回存档与变量快照；
 - `src/library.js`：AIRP 预设与助手脚本的 IndexedDB 库；
 - `src/blackbox.js`：脱敏、跨运行索引、保留策略与诊断包导出；
+- `shop/engine.js`：V3.2.6 `forge_shop` 本地规则、数值锁定、目录归一化与 API 文案合并；
 - `src/main.js`：游戏 UI、流式聊天和助手脚本兼容沙箱；
 - `server.js`：轻量静态服务与四协议 API 代理。
 # Vibe Combat（本地权威战斗）

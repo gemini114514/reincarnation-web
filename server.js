@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { readCharacterCard } from './lib/card.js';
 import vm from 'node:vm';
 import { createCombatRouter } from './combat/router.js';
+import { generateShopDraft, mergeApiCatalog, shopModelPrompt } from './shop/engine.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const cardPath = path.join(root, 'card', 'V3.2.6.png');
@@ -154,6 +155,15 @@ function openAiResponsesInput(messages) {
     return messages.map(item => ({ role: item.role, content: [{ type: item.role === 'assistant' ? 'output_text' : 'input_text', text: item.content }] }));
 }
 
+function parseJsonObject(text) {
+    const raw = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    try { return JSON.parse(raw); } catch (_error) {
+        const start = raw.indexOf('{'); const end = raw.lastIndexOf('}');
+        if (start < 0 || end <= start) throw new Error('模型返回的商城内容不是有效 JSON');
+        return JSON.parse(raw.slice(start, end + 1));
+    }
+}
+
 app.post('/api/models', async (req, res) => {
     try {
         const protocol = req.body.protocol || 'openai-chat';
@@ -180,6 +190,85 @@ app.post('/api/models', async (req, res) => {
         res.json(parsed);
     } catch (error) {
         res.status(502).json({ error: error.message });
+    }
+});
+
+app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
+    const body = req.body || {};
+    const toolArgs = body.args && typeof body.args === 'object' ? body.args : {};
+    const connection = body.connection && typeof body.connection === 'object' ? body.connection : body;
+    const characterName = String(body.characterName || body.playerName || '轮回者').trim().slice(0, 80) || '轮回者';
+    try {
+        const playerLevel = Number(body.playerLevel || body.level || toolArgs.玩家等级 || 1);
+        const target = body.target && typeof body.target === 'object' ? body.target : {};
+        const slotPreferences = Array.isArray(body.slotPreferences) && body.slotPreferences.length ? body.slotPreferences : (Array.isArray(toolArgs.槽位偏好) ? toolArgs.槽位偏好 : (Array.isArray(target.slotPreferences) && target.slotPreferences.length ? target.slotPreferences : (Array.isArray(target.slots) ? target.slots : [])));
+        const draft = generateShopDraft({
+            playerLevel,
+            slotPreferences,
+            target,
+            seed: body.seed || `${characterName}:${playerLevel}:${JSON.stringify(target)}`,
+            hero: body.hero || {},
+            currentCatalog: body.currentCatalog || {},
+        });
+        let catalog = draft.catalog;
+        let source = 'local';
+        const warnings = [];
+        let apiTrace = null;
+        const model = String(connection.model || '').trim();
+        if (model && connection.baseUrl) {
+            try {
+                const prompt = shopModelPrompt({ draft: draft.generated, target: draft.target, playerLevel: draft.playerLevel, characterName, query: draft.target.query });
+                const presetContext = Array.isArray(body.preset?.prompts) ? body.preset.prompts.filter(item => item && item.content).map(item => `[${item.role || 'system'}] ${item.content}`).join('\n\n').slice(0, 16000) : '';
+                apiTrace = { model, protocol: connection.protocol || 'openai-chat', prompt, presetChars: presetContext.length };
+                const upstream = await fetch(`http://127.0.0.1:${port}/api/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ...connection,
+                        stream: false,
+                        maxTokens: Math.max(30000, Number(connection.maxTokens) || 32768),
+                        messages: [
+                            { role: 'system', content: `你是严格的 JSON 商品文案填充器。只返回要求的 JSON，不要 markdown。${presetContext ? `\n\n以下是当前 AIRP 预设的风格约束，只影响文案风格，不得改变数值：\n${presetContext}` : ''}` },
+                            { role: 'user', content: prompt },
+                        ],
+                    }),
+                    signal: AbortSignal.timeout(300000),
+                });
+                const responseBody = await upstream.json().catch(() => ({}));
+                if (!upstream.ok) throw new Error(responseBody.error?.message || responseBody.error || `模型请求失败（${upstream.status}）`);
+                const rawContent = responseBody.choices?.[0]?.message?.content || responseBody.output_text || '';
+                const content = Array.isArray(rawContent) ? rawContent.map(item => typeof item === 'string' ? item : item?.text || '').join('') : rawContent;
+                catalog = mergeApiCatalog(draft.catalog, parseJsonObject(content), draft.target);
+                source = 'api';
+                apiTrace.usage = responseBody.usage || responseBody.usageMetadata || null;
+            } catch (error) {
+                warnings.push(`API 文案填充失败，已使用本地规则草案：${error.message}`);
+                if (apiTrace) apiTrace.error = error.message;
+            }
+        } else {
+            warnings.push('未配置可用 API，已使用本地规则生成商品数值与占位文案');
+        }
+        const member = {};
+        for (const key of ['血统列表', '技能列表', '装备列表', '道具列表', '升级列表']) member[key] = catalog[key];
+        catalog.成员商库 = { ...(catalog.成员商库 || {}), [characterName]: member };
+        res.json({
+            ok: true,
+            source,
+            warnings,
+            refreshId: `shop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            generatedAt: new Date().toISOString(),
+            rulesetVersion: draft.rulesetVersion,
+            baseQuality: draft.baseQuality,
+            seed: draft.seed,
+            target: draft.target,
+            playerLevel: draft.playerLevel,
+            catalog,
+            mvuCompatible: { 商城: catalog, path: `/stat_data/商城/成员商库/${characterName}` },
+            tool: 'forge_shop',
+            apiTrace,
+        });
+    } catch (error) {
+        res.status(400).json({ ok: false, error: error.message });
     }
 });
 
