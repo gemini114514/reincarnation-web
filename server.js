@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { readCharacterCard } from './lib/card.js';
 import vm from 'node:vm';
 import { createCombatRouter } from './combat/router.js';
-import { generateShopDraft, lifeLevelRoman, mergeApiCatalog, normalizeLifeLevel, normalizeTarget, sanitizeShopCatalog, shopModelPrompt } from './shop/engine.js';
+import { generateShopDraft, lifeLevelRoman, mergeApiCatalog, normalizeLifeLevel, normalizeTarget, shopModelPrompt } from './shop/engine.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const cardPath = path.join(root, 'card', 'V3.2.6.png');
@@ -263,10 +263,6 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
         } else {
             warnings.push('未配置可用 API，已使用本地规则生成商品数值与占位文案');
         }
-        // Last deterministic gate: also repairs untouched entries loaded from
-        // older localStorage/session records (for example an old F item priced
-        // 194) before the catalogue is exposed to the UI or MVU.
-        catalog = sanitizeShopCatalog(catalog);
         const member = {};
         for (const key of ['血统列表', '技能列表', '装备列表', '道具列表', '升级列表']) member[key] = catalog[key];
         catalog.成员商库 = { ...(catalog.成员商库 || {}), [characterName]: member };

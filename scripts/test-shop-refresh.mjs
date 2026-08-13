@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { CARD_EQUIP_QUALITY_RANGES, CARD_LIFE_TIER_RANGES, CARD_PRICE_RANGES, CARD_SKILL_ITEM_RANGES, generateShopDraft, mergeApiCatalog, normalizeLifeLevel, sanitizeShopCatalog, shopModelPrompt } from '../shop/engine.js';
+import { CARD_EQUIP_QUALITY_RANGES, CARD_LIFE_TIER_RANGES, CARD_PRICE_RANGES, CARD_SKILL_ITEM_RANGES, generateShopDraft, mergeApiCatalog, normalizeLifeLevel, shopModelPrompt } from '../shop/engine.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const appPort = 4186;
@@ -30,11 +30,7 @@ const mock = http.createServer((request, response) => {
     let text = ''; request.on('data', chunk => { text += chunk; }); request.on('end', () => {
         const payload = JSON.parse(text); mockRequests.push(payload);
         response.setHeader('Content-Type', 'application/json');
-        const prompt = payload.messages?.map(item => item.content || '').join('\n') || '';
-        const modelOutput = prompt.includes('F级故障注入')
-            ? { 刷新目标: { categories: ['skill'], qualityPreferences: ['F'] }, 技能列表: [{ 名称: '非法旧技能', 标签: ['回归'], 描述: '模型故意返回非法数值', 价格: 194, 伤害: '2d6', 消耗: 999 }] }
-            : { 刷新目标: { categories: ['equipment'], slotPreferences: ['武器'], qualityPreferences: ['SS'] }, 装备列表: [{ 名称: 'API 定向烈焰刃', 标签: ['API'], 描述: '由模型补全的文案', 价格: 1, 原始属性: { 命中: 999 } }] };
-        response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify(modelOutput) } }], usage: { prompt_tokens: 42, completion_tokens: 18, total_tokens: 60 } }));
+        response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ 刷新目标: { categories: ['equipment'], slotPreferences: ['武器'], qualityPreferences: ['SS'] }, 装备列表: [{ 名称: 'API 定向烈焰刃', 标签: ['API'], 描述: '由模型补全的文案', 价格: 1, 原始属性: { 命中: 999 } }] }) } }], usage: { prompt_tokens: 42, completion_tokens: 18, total_tokens: 60 } }));
     });
 });
 await new Promise(resolve => mock.listen(mockPort, '127.0.0.1', resolve));
@@ -74,7 +70,6 @@ try {
     assert.equal(response.body.catalog.装备列表[0].名称, 'API 定向烈焰刃');
     assert.notEqual(response.body.catalog.装备列表[0].价格, 1);
     assert.equal(response.body.catalog.技能列表[0].名称, '保留技能');
-    assert.ok(response.body.catalog.技能列表[0].价格 >= 10 && response.body.catalog.技能列表[0].价格 <= 99);
     assert.ok(response.body.catalog.成员商库['测试轮回者']);
     assert.ok(mockRequests[0].max_tokens >= 30000);
 
@@ -86,31 +81,6 @@ try {
     assert.ok(auto.body.catalog.装备列表.length > 0);
     assert.ok(auto.body.catalog.装备列表.every(item => item.品质 === 'SS'));
     assert.equal(auto.body.catalog.技能列表.length, 0);
-
-    const badF = await requestJson(null, appPort, '/api/shop/refresh', { characterName: 'F级故障注入', playerLifeLevel: 'Ⅰ', seed: 'bad-f', target: { autonomous: true, categories: ['all'], query: 'F级故障注入' }, connection: { baseUrl: `http://127.0.0.1:${mockPort}`, path: '/v1/chat/completions', protocol: 'openai-chat', model: 'mock', apiKey: 'secret' } });
-    assert.equal(badF.status, 200);
-    assert.deepEqual(badF.body.target.categories, ['skill']);
-    assert.ok(badF.body.catalog.技能列表.length > 0);
-    for (const item of badF.body.catalog.技能列表) {
-        assert.equal(item.品质, 'F');
-        assert.ok(item.价格 >= 10 && item.价格 <= 99, `F price leaked: ${item.价格}`);
-        const expected = Number(item.伤害.match(/^(\d+)d(\d+)$/i)[1]) * (Number(item.伤害.match(/^(\d+)d(\d+)$/i)[2]) + 1) / 2;
-        assert.ok(expected >= 20 && expected <= 50, `F skill damage leaked: ${item.伤害}`);
-        assert.ok(Number(item.消耗) >= 5 && Number(item.消耗) <= 10);
-    }
-
-    const repaired = sanitizeShopCatalog({ 技能列表: [{ 品质: 'F', 价格: 194, 伤害: '2d6', 消耗: 999 }], 装备列表: [{ 品质: 'F', 类型: 0, 槽位: '武器', 价格: 326, 命中: 999, 伤害: '2d20' }] });
-    assert.equal(repaired.技能列表[0].价格, 55);
-    assert.equal(repaired.技能列表[0].伤害, '10d6');
-    assert.equal(repaired.技能列表[0].消耗, '8');
-    assert.equal(repaired.装备列表[0].价格, 55);
-    assert.equal(repaired.装备列表[0].命中, 2);
-    const repairedFlat = sanitizeShopCatalog({ 商品列表: [{ 类型: '技能', 品质: 'F', 价格: 326, 伤害: '2d10', 消耗: 99 }] });
-    assert.equal(repairedFlat.技能列表.length, 1);
-    assert.equal(repairedFlat.技能列表[0].价格, 55);
-    assert.ok(Number(repairedFlat.技能列表[0].伤害.match(/^(\d+)d(\d+)$/i)[1]) * (Number(repairedFlat.技能列表[0].伤害.match(/^(\d+)d(\d+)$/i)[2]) + 1) / 2 >= 20);
-    const repairedMember = sanitizeShopCatalog({ 成员商库: { 旧角色: { 技能列表: [{ 品质: 'F', 价格: 194, 伤害: '2d6', 消耗: 99 }] } } });
-    assert.equal(repairedMember.成员商库.旧角色.技能列表[0].价格, 55);
 
     const slotsAlias = await requestJson(null, appPort, '/api/shop/refresh', { characterName: '槽位别名', playerLifeLevel: 'Ⅲ', seed: 'slots-alias', target: { categories: ['equipment'], slots: ['盾'] } });
     assert.equal(slotsAlias.status, 200);
