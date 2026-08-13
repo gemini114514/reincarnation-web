@@ -12,6 +12,11 @@ const defaults = {
         persona: '',
         activeUserProfileId: null,
         activeConnectionId: null,
+        aiAssignments: {
+            storyConnectionId: null,
+            combatConnectionId: null,
+            shopConnectionId: null,
+        },
         activePresetId: null,
         uiScale: 1,
     },
@@ -88,6 +93,10 @@ export class GameStore extends EventTarget {
                 settings: { ...clone(defaults.settings), ...(saved?.settings ?? {}) },
                 connections: Array.isArray(saved?.connections) ? saved.connections : [],
                 sessions: Array.isArray(saved?.sessions) ? saved.sessions : [],
+            };
+            data.settings.aiAssignments = {
+                ...clone(defaults.settings.aiAssignments),
+                ...(saved?.settings?.aiAssignments || {}),
             };
             data.sessions = data.sessions.map(session => ({ ...session, personalShop: { selectedIds: [], customItems: [], catalog: null, history: [], lastRefresh: null, extraRequirement: '', ...(session.personalShop || {}) }, variables: migrateVariables(session.variables), variableSnapshots: (session.variableSnapshots || []).map(snapshot => ({ ...snapshot, variables: migrateVariables(snapshot.variables) })) }));
             data.settings.maxTokens = Math.max(30000, Number(data.settings.maxTokens) || 32768);
@@ -202,6 +211,9 @@ export class GameStore extends EventTarget {
 
     deleteConnection(id) {
         this.data.connections = this.data.connections.filter(item => item.id !== id);
+        for (const field of ['storyConnectionId', 'combatConnectionId', 'shopConnectionId']) {
+            if (this.data.settings.aiAssignments?.[field] === id) this.data.settings.aiAssignments[field] = null;
+        }
         if (this.data.settings.activeConnectionId === id) {
             this.data.settings.activeConnectionId = this.data.connections[0]?.id ?? null;
             if (this.data.connections[0]) this.syncActiveConnection(this.data.connections[0]);

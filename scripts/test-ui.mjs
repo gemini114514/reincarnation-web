@@ -62,6 +62,14 @@ try {
     await page.locator('#userProfileForm').getByRole('button', { name: '保存设定' }).click();
     page.once('dialog', dialog => dialog.accept());
     await page.locator('[data-action="delete-user-profile"]').click();
+    await page.locator('[data-panel="settings"]').first().click();
+    await page.locator('[data-settings-tab="model-routing"]').click();
+    await page.locator('#modelRoutingForm').waitFor({ state: 'visible' });
+    const routingConnectionId = await page.locator('#modelRoutingForm select[name="storyConnectionId"] option').nth(1).getAttribute('value');
+    await page.locator('#modelRoutingForm select[name="storyConnectionId"]').selectOption(routingConnectionId);
+    await page.locator('#modelRoutingForm select[name="combatConnectionId"]').selectOption(routingConnectionId);
+    await page.locator('#modelRoutingForm select[name="shopConnectionId"]').selectOption(routingConnectionId);
+    await page.locator('#modelRoutingForm').getByRole('button', { name: '保存大模型配置' }).click();
     for (const panel of ['hub', 'chat', 'missions', 'status', 'inventory', 'abilities', 'world', 'relations', 'intel', 'archive', 'user-settings', 'settings']) {
         await page.locator(`[data-panel="${panel}"]`).first().click();
         await page.locator(`#view-${panel}`).waitFor({ state: 'visible' });
@@ -81,6 +89,7 @@ try {
             activeUserProfileId: data.settings.activeUserProfileId,
             userProfileCount: window.__reincarnationApp.userProfiles().length,
             userProfile: window.__reincarnationApp.userProfiles().find(item => item.id === data.settings.activeUserProfileId),
+            aiAssignments: data.settings.aiAssignments,
             strength: session.variables.stat_data['主角']['最终属性']['力量'],
             world: session.variables.stat_data['世界']['名称'],
             hasIframe: Boolean(document.querySelector('iframe')),
@@ -94,7 +103,7 @@ try {
         };
     });
     console.log({ ...result, pageErrors: errors });
-    if (result.player !== '测试用户B' || result.userProfileCount < 2 || !result.activeUserProfileId || result.userProfile?.persona !== '这是用户B的长期设定。' || result.strength < 1 || result.world !== '主神空间' || result.hasIframe || result.views < 11 || !result.promptReady || !result.floors.includes('/ 2 楼') || result.navCategories !== 2 || result.affectionNpcToPlayer !== 12 || result.affectionNpcToNpc !== -3 || result.affectionMissing !== 0 || errors.length) process.exitCode = 1;
+    if (result.player !== '测试用户B' || result.userProfileCount < 2 || !result.activeUserProfileId || result.userProfile?.persona !== '这是用户B的长期设定。' || !result.aiAssignments?.storyConnectionId || result.aiAssignments.storyConnectionId !== result.aiAssignments.combatConnectionId || result.aiAssignments.combatConnectionId !== result.aiAssignments.shopConnectionId || result.strength < 1 || result.world !== '主神空间' || result.hasIframe || result.views < 11 || !result.promptReady || !result.floors.includes('/ 2 楼') || result.navCategories !== 2 || result.affectionNpcToPlayer !== 12 || result.affectionNpcToNpc !== -3 || result.affectionMissing !== 0 || errors.length) process.exitCode = 1;
 } finally {
     await browser.close();
 }

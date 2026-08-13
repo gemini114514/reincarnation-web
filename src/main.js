@@ -232,7 +232,7 @@ function normalizeTokenUsage(usage, promptMessages, output) {
 
 async function generate({ addUser = true, text = '' } = {}) {
     if (generating) return;
-    const settings = store.data.settings;
+    const settings = aiConnection('story');
     if (!settings.baseUrl || !settings.model) {
         showPanel('settings');
         toast('请先填写 API 地址和模型名称', 'error');
@@ -579,7 +579,7 @@ function defaultEncounter() {
 }
 
 function combatConnection() {
-    const id = store.data.settings.activeCombatConnectionId || store.data.settings.activeConnectionId;
+    const id = aiConnectionId('combat') || store.data.settings.activeCombatConnectionId || store.data.settings.activeConnectionId;
     return store.data.connections.find(item => item.id === id) || null;
 }
 
@@ -668,8 +668,8 @@ function renderCombat() {
     $('#combatHash').textContent = state?.eventHash?.slice(0, 16) || '—';
     $('#combatHash').title = state?.eventHash || '';
     if (state) $('#combatMode').value = state.mode;
-    const connectionId = store.data.settings.activeCombatConnectionId || store.data.settings.activeConnectionId || '';
-    $('#combatConnection').innerHTML = `<option value="">仅用本地编译器</option>${store.data.connections.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === connectionId ? 'selected' : ''}>战斗 · ${escapeHtml(item.name || item.model)}</option>`).join('')}`;
+    const connectionId = aiConnectionId('combat') || store.data.settings.activeCombatConnectionId || store.data.settings.activeConnectionId || '';
+    $('#combatConnection').innerHTML = `<option value="">跟随当前 API 主线路</option>${store.data.connections.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === connectionId ? 'selected' : ''}>战斗 · ${escapeHtml(item.name || item.model)}</option>`).join('')}`;
     const presetId = store.data.settings.activeCombatPresetId || store.data.settings.activePresetId || '';
     $('#combatPreset').innerHTML = `<option value="">无额外预设</option>${presets.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === presetId ? 'selected' : ''}>战斗 · ${escapeHtml(item.name)}</option>`).join('')}`;
     if (state?.strategy?.source && document.activeElement !== $('#combatStrategy')) $('#combatStrategy').value = state.strategy.source;
@@ -702,7 +702,7 @@ async function createCombatFromEditor(text) {
 
 async function narrateCombat() {
     if (!combatState || !['paused', 'completed'].includes(combatState.status)) return toast('只有正式暂停点或已完成战斗可生成剧情', 'error');
-    const settings = store.data.settings;
+    const settings = aiConnection('story');
     if (!settings.baseUrl || !settings.model) return toast('请先配置正文模型连接', 'error');
     const narrative = await combatRequest(`/${combatState.id}/narrative-bundle`);
     const turnId = crypto.randomUUID();
@@ -755,6 +755,56 @@ function renderConnectionManager() {
     $('#connectionList').innerHTML = store.data.connections.map(item => `<div class="manager-item ${item.id === active ? 'active' : ''}" data-connection-id="${item.id}"><b>${item.id === active ? '<i class="active-dot"></i>' : ''}${escapeHtml(item.name)}</b><small>${protocolLabel(item.protocol)} · ${escapeHtml(item.model || '未设置模型')}</small></div>`).join('') || '<div class="empty-state">暂无连接配置</div>';
     const current = store.data.connections.find(item => item.id === active);
     $('#activeCallSummary').innerHTML = current ? [['当前配置', current.name], ['协议', protocolLabel(current.protocol)], ['模型', current.model], ['地址', current.baseUrl]].map(([key, value]) => `<div class="active-call-row"><span>${key}</span><b>${escapeHtml(value)}</b></div>`).join('') : '<div class="empty-state">尚未选择模型连接</div>';
+}
+
+const AI_ASSIGNMENT_FIELDS = {
+    story: 'storyConnectionId',
+    combat: 'combatConnectionId',
+    shop: 'shopConnectionId',
+};
+
+function aiConnectionId(purpose) {
+    const field = AI_ASSIGNMENT_FIELDS[purpose];
+    return field ? store.data.settings.aiAssignments?.[field] || null : null;
+}
+
+function aiConnection(purpose) {
+    const assigned = store.data.connections.find(item => item.id === aiConnectionId(purpose));
+    if (assigned) return assigned;
+    const active = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId);
+    return active || store.data.settings;
+}
+
+function renderModelRoutingManager() {
+    const form = $('#modelRoutingForm');
+    if (!form) return;
+    const assignments = store.data.settings.aiAssignments || {};
+    const options = `<option value="">跟随当前 API 主线路</option>${store.data.connections.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.model || '未命名连接')} · ${escapeHtml(item.model || '未设置模型')}</option>`).join('')}`;
+    for (const [purpose, field] of Object.entries(AI_ASSIGNMENT_FIELDS)) {
+        const select = form.elements[field];
+        if (!select) continue;
+        select.innerHTML = options;
+        select.value = assignments[field] || '';
+    }
+    const summary = $('#modelRoutingSummary');
+    if (summary) {
+        const labels = { story: '剧情 AI', combat: '战斗 AI', shop: '商店 AI' };
+        summary.innerHTML = Object.entries(AI_ASSIGNMENT_FIELDS).map(([purpose, field]) => {
+            const connection = store.data.connections.find(item => item.id === assignments[field]);
+            return `<div class="active-call-row"><span>${labels[purpose]}</span><b>${escapeHtml(connection?.name || '跟随当前 API 主线路')}</b></div>`;
+        }).join('');
+    }
+}
+
+function saveModelRouting() {
+    const form = $('#modelRoutingForm');
+    if (!form) return;
+    const aiAssignments = Object.fromEntries(Object.values(AI_ASSIGNMENT_FIELDS).map(field => [field, form.elements[field].value || null]));
+    store.updateSettings({ aiAssignments });
+    renderModelRoutingManager();
+    renderCombat();
+    renderPersonalShop();
+    toast('大模型用途配置已保存', 'success');
 }
 
 function editUserProfile(profile = null) {
@@ -1291,6 +1341,7 @@ function fillSettings() {
     const active = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || null;
     editConnection(active);
     renderConnectionManager();
+    renderModelRoutingManager();
     applyUiScale();
 }
 
@@ -1448,7 +1499,7 @@ function renderPersonalShop() {
     const last = state.lastRefresh;
     const hero = runtime.variables.stat_data?.主角 || {};
     const level = heroLifeLevel(hero);
-    const activeConnection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
+    const activeConnection = aiConnection('shop');
     const elapsed = personalShopRefreshBusy ? `${Math.max(0, (Date.now() - personalShopRefreshStartedAt) / 1000).toFixed(1)} 秒` : '';
     const status = personalShopRefreshBusy ? `${personalShopRefreshStatus || '正在等待模型响应'} · 已用时 ${elapsed} · 再点一次取消` : (last ? `上次完成：${escapeHtml(last.source || 'local')} · ${escapeHtml(formatTime(last.generatedAt || last.at || Date.now()))} · 用时 ${last.elapsedMs ? `${(last.elapsedMs / 1000).toFixed(1)} 秒` : '—'} · seed ${escapeHtml(last.seed || '—')}` : '尚未刷新；目标、槽位和数量由当前大模型自行决定');
     root.innerHTML = `<section class="personal-shop-wallet"><div><small>PERSONAL WALLET</small><b>¤ ${personalShopBalance().toLocaleString()}</b></div><span>${escapeHtml(hero.姓名 || store.data.settings.userName || '当前人物')} · 独立终端</span></section><section class="personal-shop-refresh"><header><div><small>AI SHOP TERMINAL · forge_shop</small><b>大模型自主决定本次商品目标</b></div><span>${escapeHtml(activeConnection?.model || '未选择 API')}</span></header><div class="shop-refresh-grid shop-refresh-readonly"><div><small>生命层级 · MVU</small><b>${escapeHtml(`生命层级 · ${lifeLevelRoman(level)}`)}</b><em>读取 stat_data.主角.层级</em></div><label class="wide">额外要求（可选）<input id="personalShopQuery" value="${escapeHtml(personalShopExtraRequirement)}" placeholder="例如：偏向火焰、适合近战、避免重复商品"></label></div><button type="button" class="ai-refresh-button ${personalShopRefreshBusy ? 'is-busy' : ''}" data-action="refresh-personal-shop"><span class="ai-refresh-icon">✦</span><span><b>${personalShopRefreshBusy ? '取消本次商城刷新' : '让大模型生成个人商城'}</b><small>${personalShopRefreshBusy ? '再次点击立即取消 · 不写入半成品' : '模型将结合生命层级、库存和额外要求自主选择目标'}</small></span><i>${personalShopRefreshBusy ? 'CANCEL' : 'GENERATE'}</i></button><small class="shop-refresh-status ${personalShopRefreshBusy ? 'is-running' : ''}">${status}</small></section><section class="personal-shop-layout"><aside><input data-personal-shop-search value="${escapeHtml(personalShopSearch)}" placeholder="搜索兑换项"><div>${[['all','全部分类'],['equipment','装备'],['item','道具'],['skill','技能'],['bloodline','血统'],['upgrade','升级']].map(([key,label]) => `<button data-personal-shop-category="${key}" class="${personalShopCategory === key ? 'active' : ''}">${label}</button>`).join('')}</div></aside><main><div class="personal-rarity-filter">${['all','F','E','D','C','B','A','S','SS','SSS'].map(key => `<button data-personal-shop-rarity="${key}" class="${personalShopRarity === key ? 'active' : ''}">${key === 'all' ? '全部品质' : key}</button>`).join('')}</div><div class="setup-shop-grid">${items.map(item => shopItemCard(item, { personal: true })).join('') || '<div class="empty-state">没有匹配的兑换项</div>'}</div></main></section><section class="selected-panel personal-shop-cart"><header><div><b>当前人物购物车</b><small>选择状态随人物存档持久化</small></div><span>${chosen.length}</span></header><div>${chosen.map(item => `<button data-starter-id="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ¤${item.cost} ×</button>`).join('') || '<p>尚未选择兑换项</p>'}</div></section>`;
@@ -1474,7 +1525,7 @@ async function refreshPersonalShop() {
     renderPersonalShop();
     const hero = runtime.variables.stat_data?.主角 || {};
     const playerLevel = heroLifeLevel(hero);
-    const connection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
+    const connection = aiConnection('shop');
     const preset = runtime.activePreset ? { name: runtime.activePreset.name, prompts: (runtime.activePreset.prompts || []).filter(item => item.enabled !== false).map(item => ({ role: item.role, content: runtime.renderTemplate(item.content) })) } : null;
     const payload = { characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel, playerLifeLevel: lifeLevelRoman(playerLevel), target: { autonomous: true, categories: ['all'], query }, seed: crypto.randomUUID(), hero, currentCatalog: session.personalShop?.catalog || {}, connection, preset };
     const connectionMeta = { id: connection.id, name: connection.name, model: connection.model, protocol: connection.protocol };
@@ -1513,7 +1564,7 @@ async function forgePersonalShop(args = {}) {
     const session = store.activeSession;
     if (!session) throw new Error('当前没有活动存档');
     const hero = runtime.variables.stat_data?.主角 || {};
-    const connection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
+    const connection = aiConnection('shop');
     const playerLevel = heroLifeLevel(hero);
     const payload = {
         characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel, playerLifeLevel: lifeLevelRoman(playerLevel),
@@ -1676,6 +1727,7 @@ function bindEvents() {
             $$('[data-settings-panel]').forEach(panel => panel.classList.toggle('active', panel.dataset.settingsPanel === settingsTab));
             blackbox.record('ui', 'settings_tab_opened', { tab: settingsTab }, { sessionId: store.activeSession?.id });
             if (settingsTab === 'blackbox') renderBlackBox();
+            if (settingsTab === 'model-routing') renderModelRoutingManager();
             return;
         }
         const connectionItem = event.target.closest('[data-connection-id]');
@@ -1683,6 +1735,7 @@ function bindEvents() {
             store.selectConnection(connectionItem.dataset.connectionId);
             editConnection(store.data.connections.find(item => item.id === connectionItem.dataset.connectionId));
             renderConnectionManager();
+            renderModelRoutingManager();
             return;
         }
         const userProfileItem = event.target.closest('[data-user-profile-id]');
@@ -1898,6 +1951,7 @@ function bindEvents() {
             applyUiScale();
             toast('常规设置已保存', 'success');
         }
+        if (action === 'save-model-routing') saveModelRouting();
         if (action === 'new-user-profile') {
             selectedUserProfileId = null;
             renderUserProfileManager();
@@ -1929,7 +1983,7 @@ function bindEvents() {
             if (id && confirm('删除这条 API 连接配置？')) {
                 store.deleteConnection(id);
                 editConnection(store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || null);
-                renderConnectionManager();
+                renderConnectionManager(); renderModelRoutingManager();
             }
         }
         if (action === 'fetch-models') await fetchModels();
@@ -2077,7 +2131,11 @@ function bindEvents() {
             try { await mutateCombat('control', { mode: event.target.value }); } catch (error) { toast(`模式切换失败：${error.message}`, 'error'); }
             return;
         }
-        if (event.target.matches('#combatConnection')) { store.updateSettings({ activeCombatConnectionId: event.target.value || null }); renderCombat(); return; }
+        if (event.target.matches('#combatConnection')) {
+            const aiAssignments = { ...(store.data.settings.aiAssignments || {}), combatConnectionId: event.target.value || null };
+            store.updateSettings({ activeCombatConnectionId: event.target.value || null, aiAssignments });
+            renderModelRoutingManager(); renderCombat(); return;
+        }
         if (event.target.matches('#combatPreset')) { store.updateSettings({ activeCombatPresetId: event.target.value || null }); renderCombat(); return; }
         if (event.target.matches('[data-cover-agree]')) {
             event.target.closest('.native-cover').querySelector('[data-action="enter-game"]').disabled = !event.target.checked;
@@ -2142,7 +2200,7 @@ function bindEvents() {
         event.preventDefault();
         const values = Object.fromEntries(new FormData(event.currentTarget));
         values.temperature = Number(values.temperature); values.maxTokens = Number(values.maxTokens);
-        const saved = store.saveConnection(values); editConnection(saved); renderConnectionManager();
+        const saved = store.saveConnection(values); editConnection(saved); renderConnectionManager(); renderModelRoutingManager();
         toast(`连接配置“${saved.name}”已保存并启用`, 'success');
     });
     $('#promptEntryEditor').addEventListener('submit', async event => {
@@ -2215,6 +2273,7 @@ function bindEvents() {
         if (action === 'save') await saveTextEditor();
     });
     $('#setupForm').addEventListener('submit', submitSetup);
+    $('#modelRoutingForm').addEventListener('submit', event => { event.preventDefault(); saveModelRouting(); });
     $('#userProfileForm').addEventListener('submit', event => { event.preventDefault(); saveUserProfile(); });
     $('#setupShopSearch').addEventListener('input', renderSetupShop);
     $('#personalShopContent').addEventListener('input', event => { if (event.target.matches('[data-personal-shop-search]')) { personalShopSearch = event.target.value.trim().toLowerCase(); renderPersonalShop(); requestAnimationFrame(() => { const input = $('[data-personal-shop-search]'); input?.focus(); input?.setSelectionRange(input.value.length, input.value.length); }); } });
@@ -2318,6 +2377,7 @@ async function importConnections(file) {
     if (!confirm(`导入会覆盖当前 ${store.data.connections.length} 个 API 实例，确定继续？`)) return;
     store.data.connections = [];
     store.data.settings.activeConnectionId = null;
+    store.data.settings.aiAssignments = { storyConnectionId: null, combatConnectionId: null, shopConnectionId: null };
     let last;
     for (const item of items) {
         if (!item?.name || !item?.baseUrl) continue;
@@ -2325,7 +2385,7 @@ async function importConnections(file) {
         last = store.saveConnection({ ...defaults, extraHeaders: '{}', extraBody: '{}', testPrompt: '只回复 OK', ...item, id: item.id || crypto.randomUUID() });
     }
     if (!last) throw new Error('没有可导入的有效实例');
-    editConnection(last); renderConnectionManager(); toast(`已导入 ${items.length} 条 API 实例`, 'success');
+    editConnection(last); renderConnectionManager(); renderModelRoutingManager(); toast(`已导入 ${items.length} 条 API 实例`, 'success');
 }
 
 function exportConnections() {
