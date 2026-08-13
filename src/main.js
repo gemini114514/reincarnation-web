@@ -1255,8 +1255,8 @@ function personalCatalogItems() {
         cost: Number(entry.价格 ?? entry.cost ?? 0),
         desc: entry.描述 || entry.desc || '',
         tags: entry.标签 || entry.tags || [],
-        attrs: entry.原始属性 || entry.attrs || {},
-        effects: entry.效果 || entry.effects || {},
+        attrs: entry.原始属性 || entry.被动属性 || entry.attrs || Object.fromEntries(['命中', '伤害', 'DEF', 'MDEF'].filter(key => entry[key] !== undefined).map(key => [key, entry[key]])),
+        effects: entry.效果 || entry.特效 || entry.特殊效果 || entry.effects || {},
         consume: entry.消耗 || entry.consume || '',
         _cat: category,
         _shopGenerated: true,
@@ -1360,7 +1360,7 @@ async function refreshPersonalShop() {
     const hero = runtime.variables.stat_data?.主角 || {};
     const playerLevel = Math.min(50, Math.max(1, Number(hero.等级 || hero.层级 || hero.位阶 || 1) || 1));
     const connection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
-    const preset = runtime.activePreset ? { name: runtime.activePreset.name, prompts: (runtime.activePreset.prompts || []).filter(item => item.enabled !== false).map(item => ({ role: item.role, content: item.content })) } : null;
+    const preset = runtime.activePreset ? { name: runtime.activePreset.name, prompts: (runtime.activePreset.prompts || []).filter(item => item.enabled !== false).map(item => ({ role: item.role, content: runtime.renderTemplate(item.content) })) } : null;
     const payload = { characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel, target: { autonomous: true, categories: ['all'], query }, seed: crypto.randomUUID(), hero, currentCatalog: session.personalShop?.catalog || {}, connection, preset };
     const connectionMeta = { id: connection.id, name: connection.name, model: connection.model, protocol: connection.protocol };
     await blackbox.record('shop', 'shop_refresh_started', { target: 'model-decided', extraRequirement: query, playerLevel, connection: connectionMeta }, { sessionId: session.id });
@@ -1404,7 +1404,7 @@ async function forgePersonalShop(args = {}) {
         characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel,
         target: { autonomous: true, categories: ['all'], query: String(args.要求 ?? args.query ?? '').slice(0, 500) },
         seed: args.seed || crypto.randomUUID(), hero, currentCatalog: session.personalShop?.catalog || {}, connection,
-        preset: runtime.activePreset ? { name: runtime.activePreset.name, prompts: (runtime.activePreset.prompts || []).filter(item => item.enabled !== false).map(item => ({ role: item.role, content: item.content })) } : null,
+        preset: runtime.activePreset ? { name: runtime.activePreset.name, prompts: (runtime.activePreset.prompts || []).filter(item => item.enabled !== false).map(item => ({ role: item.role, content: runtime.renderTemplate(item.content) })) } : null,
     };
     const response = await fetch('/api/shop/forge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const body = await response.json();

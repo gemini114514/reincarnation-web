@@ -261,6 +261,7 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
         const member = {};
         for (const key of ['血统列表', '技能列表', '装备列表', '道具列表', '升级列表']) member[key] = catalog[key];
         catalog.成员商库 = { ...(catalog.成员商库 || {}), [characterName]: member };
+        const shopItems = ['升级列表', '技能列表', '血统列表', '装备列表', '道具列表'].flatMap(key => catalog[key] || []);
         res.json({
             ok: true,
             source,
@@ -269,9 +270,14 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
             generatedAt: new Date().toISOString(),
             rulesetVersion: draft.rulesetVersion,
             baseQuality: draft.baseQuality,
+            priceRange: draft.priceRange,
             seed: draft.seed,
             target: draft.target,
             playerLevel: draft.playerLevel,
+            // Card forge_shop returns a localized flat 商品列表. Keep that
+            // compatibility view alongside the app's categorized catalogue.
+            商品列表: shopItems,
+            items: shopItems,
             catalog,
             mvuCompatible: { 商城: catalog, path: `/stat_data/商城/成员商库/${characterName}` },
             tool: 'forge_shop',
