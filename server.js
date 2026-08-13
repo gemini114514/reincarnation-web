@@ -244,6 +244,8 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
                 const rawContent = responseBody.choices?.[0]?.message?.content || responseBody.output_text || '';
                 const content = Array.isArray(rawContent) ? rawContent.map(item => typeof item === 'string' ? item : item?.text || '').join('') : rawContent;
                 const responseCatalog = parseJsonObject(content);
+                apiTrace.responseText = String(content).slice(0, 50000);
+                apiTrace.response = responseCatalog;
                 const modelSelection = responseCatalog.刷新目标 || responseCatalog.refreshTarget || responseCatalog.target || {};
                 const modelTarget = autonomousTarget ? normalizeTarget({ ...modelSelection, categories: modelSelection.categories || modelSelection.分类 || modelSelection.category || modelSelection.categories列表 }) : draft.target;
                 const selectedTarget = autonomousTarget && modelTarget.categories.length ? modelTarget : draft.target;

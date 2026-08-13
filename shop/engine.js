@@ -99,7 +99,8 @@ const getStatInRange = (rng, rank, total, min, max) => { const ratio = rank / Ma
 const tieredPrices = (rng, range, count) => {
     const [min, max] = range;
     // SSS is explicitly open-ended in the card. Local fallback uses its minimum;
-    // a model may still provide a higher price, but mergeApiCatalog will lock it.
+    // a model may provide a higher price, and the prompt/response trace keeps
+    // that output visible without a silent local correction.
     if (!Number.isFinite(max)) return Array.from({ length: count }, () => min);
     const step = (max - min) / (count + 1);
     return Array.from({ length: count }, (_, i) => {
@@ -254,7 +255,7 @@ const skillTypeNumber = item => item.技能类型分类 === '被动' || item.类
 const convertShopItem = (item = {}) => {
     const id = item.id;
     if (item.类型 === '技能' || item._forgeType === '技能') {
-        return appendUpgradeFields({ ...(id ? { id } : {}), 名称: String(item.名称 ?? ''), 品质: normalizeQualityLetter(item.品质), 类型: skillTypeNumber(item), 消耗: String(item.消耗 ?? 0), ...(item.标签?.length ? { 标签: unique(item.标签) } : {}), 效果: itemEffectRecord(item.效果 || (item.伤害 ? { 伤害: item.伤害, 伤害属性: item.伤害属性 || '' } : null)), 描述: String(item.描述 ?? ''), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
+        return appendUpgradeFields({ ...(id ? { id } : {}), 名称: String(item.名称 ?? ''), 品质: normalizeQualityLetter(item.品质), 类型: skillTypeNumber(item), 伤害: item.伤害, 伤害属性: item.伤害属性, 消耗: String(item.消耗 ?? 0), ...(item.标签?.length ? { 标签: unique(item.标签) } : {}), 效果: itemEffectRecord(item.效果 || (item.伤害 ? { 伤害: item.伤害, 伤害属性: item.伤害属性 || '' } : null)), 描述: String(item.描述 ?? ''), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
     }
     if (item.类型 === '血统' || item._forgeType === '血统') {
         const passive = compactPassiveStats(item.被动属性 || {});
@@ -275,7 +276,7 @@ const convertShopItem = (item = {}) => {
             else if (armor) Object.assign(raw, { DEF: quality, MDEF: quality });
         }
         const tags = unique([...(item.标签 || []), slot]);
-        return appendUpgradeFields({ ...(id ? { id } : {}), 名称: item.名称, 品质: quality, 类型: EQUIPMENT_TYPE_BY_SLOT[slot] ?? 7, 原始属性: raw, 效果: itemEffectRecord(item.效果 || item.特效), 描述: String(item.描述 ?? ''), ...(tags.length ? { 标签: tags } : {}), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
+        return appendUpgradeFields({ ...(id ? { id } : {}), 名称: item.名称, 品质: quality, 类型: EQUIPMENT_TYPE_BY_SLOT[slot] ?? 7, 槽位: slot, 子类型: item.子类型, 原始属性: raw, 命中: item.命中, 伤害: item.伤害, DEF: item.DEF, MDEF: item.MDEF, 效果: itemEffectRecord(item.效果 || item.特效), 描述: String(item.描述 ?? ''), ...(tags.length ? { 标签: tags } : {}), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
     }
     if (item.类型 === '道具' || item._forgeType === '道具') {
         return appendUpgradeFields({ ...(id ? { id } : {}), 名称: item.名称, 品质: normalizeQualityLetter(item.品质), 类型: String(item.道具类型 || item.类型 || '消耗品'), 数量: item.数量 ?? 1, 效果: itemEffectRecord(item.效果), ...(item.标签?.length ? { 标签: unique(item.标签) } : {}), 描述: String(item.描述 ?? ''), ...(item.价格 != null ? { 价格: item.价格 } : {}) }, item);
@@ -360,16 +361,17 @@ export function generateShopDraft({ playerLevel = 1, slotPreferences = [], targe
 export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
     const result = normalizeCatalog(draftCatalog);
     const incoming = normalizeCatalog(responseCatalog);
-    const textFields = ['名称', '描述', '道具类型', '伤害属性'];
+    // No balance correction is performed here. The prompt is the contract;
+    // if an upstream model returns a wrong price or number, keep it visible so
+    // the prompt/API trace can be audited instead of masking the defect.
+    const modelFields = ['名称', '描述', '道具类型', '伤害属性', '标签', '效果', '特效', '特殊效果', '价格', '品质', '原始属性', '消耗', '伤害', '命中', 'DEF', 'MDEF', '类型', '数量', '附带技能', '槽位', '子类型'];
     for (const category of target.categories) {
         const key = CATEGORY_KEYS[category];
         const items = incoming[key]?.length ? incoming[key] : (draftCatalog[key] || []);
         result[key] = items.slice(0, draftCatalog[key]?.length || items.length || 50).map((item, index) => {
             const base = draftCatalog[key]?.[index] || {};
             const safe = {};
-            for (const field of textFields) if (item[field] !== undefined) safe[field] = String(item[field]);
-            if (item.标签 !== undefined) safe.标签 = unique(item.标签);
-            if (item.效果 !== undefined || item.特效 !== undefined) safe.效果 = itemEffectRecord(item.效果 ?? item.特效);
+            for (const field of modelFields) if (item[field] !== undefined) safe[field] = field === '效果' || field === '特效' || field === '特殊效果' ? itemEffectRecord(item[field]) : field === '标签' ? unique(item[field]) : deepClone(item[field]);
             if (item.特殊效果 !== undefined && category === 'bloodline') safe.效果 = { ...(safe.效果 || {}), ...itemEffectRecord(item.特殊效果) };
             return { ...deepClone(base), ...safe, id: base.id || item.id };
         });
@@ -380,5 +382,23 @@ export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
 export function shopModelPrompt({ draft, target, playerLevel, characterName, query }) {
     const roman = lifeLevelRoman(playerLevel);
     const skillRanges = QUALITY_ORDER.map(quality => `${quality}[技能${CARD_SKILL_ITEM_RANGES[quality].技能伤害[0]}-${CARD_SKILL_ITEM_RANGES[quality].技能伤害[1]}|检定+${CARD_SKILL_ITEM_RANGES[quality].检定修正[0]}-${Number.isFinite(CARD_SKILL_ITEM_RANGES[quality].检定修正[1]) ? CARD_SKILL_ITEM_RANGES[quality].检定修正[1] : '100以上'}|道具HP ${typeof CARD_SKILL_ITEM_RANGES[quality].道具HP === 'string' ? CARD_SKILL_ITEM_RANGES[quality].道具HP : `${CARD_SKILL_ITEM_RANGES[quality].道具HP[0]}-${CARD_SKILL_ITEM_RANGES[quality].道具HP[1]}`}|状态预算${CARD_SKILL_ITEM_RANGES[quality].状态预算}]`).join('、');
-    return `你是《轮回战场》V3.2.6 卡片的 forge_shop 文案填充器。严格按嵌入卡片规则工作。生命层级是只读的生态/承载上限/权限标签，当前标签为${roman}；它与商品品质 F–SSS、五维属性品质、机制品质和价格完全独立，严禁由生命层级推导品质，也不要把生命层级改写成品质字母或数字。草案中的每件商品已经独立锁定品质、价格与数值，必须原样保留。价格区间必须严格使用 F[10,99]、E[100,999]、D[1000,4999]、C[5000,19999]、B[20000,79999]、A[80000,319999]、S[320000,1270000]、SS[1280000,5110000]、SSS[5120000,+∞]。技能/道具/状态锚点必须遵守：${skillRanges}。${target?.autonomous ? '你必须自主决定刷新目标，先输出刷新目标.categories、刷新目标.slotPreferences和刷新目标.qualityPreferences（品质偏好只允许 F/E/D/C/B/A/S/SS/SSS）；只返回你决定刷新的类别，其余列表为空。' : ''}输出单个 JSON 对象，键必须包含 刷新目标、血统列表、技能列表、装备列表、道具列表、升级列表；也兼容直接返回商品列表。效果必须是字符串值的键值记录（不得嵌套对象或数组）。只允许补全名称、标签、描述、效果、特效、伤害属性和道具类型，不得改动卡片草案中的品质、价格、原始属性、消耗或附带技能引用。当前目标：${JSON.stringify(target)}；人物：${characterName || '轮回者'}；额外要求：${query || '无'}。\n草案：${JSON.stringify(draft)}`;
+    return `你是《轮回战场》V3.2.6 卡片的 forge_shop 文案填充器。你的任务是给服务器草案补全文案，不是重新设计数值。
+
+【生命层级】当前为${roman}。生命层级只表示本体承载、生态位与权限，和商品品质 F–SSS、属性品质、机制品质、最终数值、价格完全独立。严禁把生命层级转换成品质字母或数字形式，也严禁根据生命层级推导商品品质。
+
+【草案数据契约】草案中的每个商品已经由服务器按卡片规则生成并锁定。你必须按原索引/原 id 原样保留：品质、价格、消耗、原始属性、附带技能引用，以及伤害、命中、DEF、MDEF 等数值字段。不得重算、四舍五入、折扣、升级或引用旧记录。你可以只返回需要补全的文案字段；服务器会把文案合并回对应草案，任何未返回字段都以草案为准。
+
+【价格硬规则】价格必须服从商品自身品质，不能服从生命层级：F[10,99]、E[100,999]、D[1000,4999]、C[5000,19999]、B[20000,79999]、A[80000,319999]、S[320000,1270000]、SS[1280000,5110000]、SSS[5120000,+∞]。F 级价格只能是 10–99，100 或更高均为错误。
+
+【技能/道具/状态锚点】${skillRanges}。技能伤害写入草案的伤害字段或效果字符串时，必须复制草案值；不要自行生成 2d6、2d10 等不在对应品质区间的旧式数值。效果必须是扁平的“键:字符串”记录，不得嵌套对象或数组。
+
+${target?.autonomous ? '【自主刷新目标】先输出“刷新目标”，其中 categories、slotPreferences、qualityPreferences 只能使用协议允许的值；只返回你决定刷新的类别，其余类别列表置空。qualityPreferences 只允许 F/E/D/C/B/A/S/SS/SSS。' : ''}
+【输出协议】只返回一个 JSON 对象，必须包含：刷新目标、血统列表、技能列表、装备列表、道具列表、升级列表；也兼容直接返回商品列表。每个列表条目优先只返回名称、标签、描述、效果、特效、伤害属性、道具类型等文案字段，不得输出与草案不同的品质、价格或数值。
+
+当前目标：${JSON.stringify(target)}
+人物：${characterName || '轮回者'}
+额外要求：${query || '无'}
+
+【草案快照】
+${JSON.stringify(draft)}`;
 }

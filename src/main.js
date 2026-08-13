@@ -752,7 +752,7 @@ function renderConnectionModelOptions(filter = '') {
 
 function renderConnectionManager() {
     const active = store.data.settings.activeConnectionId;
-    $('#connectionList').innerHTML = store.data.connections.map(item => `<div class="manager-item ${item.id === active ? 'active' : ''}" data-connection-id="${item.id}"><b>${item.id === active ? '<i class="active-dot"></i>' : ''}${escapeHtml(item.name)}</b><small>${protocolLabel(item.protocol)} · ${escapeHtml(item.model || '未设置模型')}</small></div>`).join('') || '<div class="empty-state">暂无连接配置</div>';
+    $('#connectionList').innerHTML = store.data.connections.map(item => `<div class="manager-item ${item.id === active ? 'active' : ''}" data-connection-id="${item.id}"><b>${item.id === active ? '<i class="active-dot"></i>' : ''}${escapeHtml(item.name || '未命名连接')}</b><small>${protocolLabel(item.protocol)} · ${escapeHtml(item.model || '未设置模型')}</small></div>`).join('') || '<div class="empty-state">暂无连接配置</div>';
     const current = store.data.connections.find(item => item.id === active);
     $('#activeCallSummary').innerHTML = current ? [['当前配置', current.name], ['协议', protocolLabel(current.protocol)], ['模型', current.model], ['地址', current.baseUrl]].map(([key, value]) => `<div class="active-call-row"><span>${key}</span><b>${escapeHtml(value)}</b></div>`).join('') : '<div class="empty-state">尚未选择模型连接</div>';
 }
@@ -901,6 +901,29 @@ function editConnection(connection = null) {
     $('#temperatureValue').textContent = value.temperature ?? .9;
     connectionModelCandidates = [];
     $('#connectionModelOptions').classList.remove('open');
+}
+
+function createConnectionDraft() {
+    const protocol = 'openai-chat';
+    const saved = store.saveConnection({
+        id: crypto.randomUUID(),
+        name: '新建连接',
+        protocol,
+        ...protocolDefaults(protocol),
+        apiKey: '',
+        model: '',
+        apiVersion: '',
+        extraHeaders: '{}',
+        extraBody: '{}',
+        testPrompt: '只回复 OK',
+        temperature: .9,
+        maxTokens: 32768,
+    });
+    editConnection(saved);
+    renderConnectionManager();
+    renderModelRoutingManager();
+    $('#connectionForm').elements.name.focus();
+    toast('已创建并保存临时连接配置，请继续填写后再次保存', 'info');
 }
 
 function renderPresetManager() {
@@ -1977,7 +2000,7 @@ function bindEvents() {
         if (action === 'import-user-profile') $('#userProfileFile').click();
         if (action === 'export-user-profile') exportUserProfile();
         if (action === 'export-user-profiles') exportUserProfiles();
-        if (action === 'new-connection') editConnection();
+        if (action === 'new-connection') createConnectionDraft();
         if (action === 'delete-connection') {
             const id = $('#connectionForm').elements.id.value;
             if (id && confirm('删除这条 API 连接配置？')) {
@@ -2341,10 +2364,27 @@ async function fetchModels() {
     } catch (error) { toast(`获取模型失败：${error.message}`, 'error'); }
 }
 
+function validateConnectionForTest(values) {
+    const missing = [];
+    if (!String(values.baseUrl || '').trim()) missing.push('API 基础地址');
+    if (!String(values.model || '').trim()) missing.push('模型名称');
+    for (const [key, label] of [['extraHeaders', '额外请求头 JSON'], ['extraBody', '额外请求体 JSON']]) {
+        if (!String(values[key] || '').trim()) continue;
+        try { JSON.parse(values[key]); } catch (error) { return `测试前请修正${label}：${error.message}`; }
+    }
+    return missing.length ? `测试前请填写：${missing.join('、')}` : '';
+}
+
 async function testConnection() {
     const form = $('#connectionForm');
     const values = Object.fromEntries(new FormData(form));
     const result = $('#connectionTestResult');
+    const validationError = validateConnectionForTest(values);
+    if (validationError) {
+        result.textContent = validationError;
+        result.className = 'error';
+        return;
+    }
     result.textContent = '正在连接…';
     try {
         const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...values, stream: false, temperature: Number(values.temperature), maxTokens: Math.min(64, Number(values.maxTokens) || 64), messages: [{ role: 'user', content: values.testPrompt || '只回复 OK' }] }) });

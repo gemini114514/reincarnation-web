@@ -63,6 +63,18 @@ try {
     page.once('dialog', dialog => dialog.accept());
     await page.locator('[data-action="delete-user-profile"]').click();
     await page.locator('[data-panel="settings"]').first().click();
+    await page.locator('[data-settings-tab="connections"]').click();
+    const connectionCountBefore = await page.locator('#connectionList [data-connection-id]').count();
+    await page.locator('[data-action="new-connection"]').click();
+    const newConnectionId = await page.locator('#connectionForm [name="id"]').inputValue();
+    const connectionCountAfterCreate = await page.locator('#connectionList [data-connection-id]').count();
+    await page.locator('#connectionForm [name="name"]').fill('');
+    await page.locator('#connectionForm [name="baseUrl"]').fill('');
+    await page.locator('#connectionForm [name="model"]').fill('');
+    await page.locator('#connectionForm').getByRole('button', { name: '保存连接' }).click();
+    const connectionCountAfterSave = await page.locator('#connectionList [data-connection-id]').count();
+    await page.locator('[data-action="test-connection"]').click();
+    const testValidation = await page.locator('#connectionTestResult').textContent();
     await page.locator('[data-settings-tab="model-routing"]').click();
     await page.locator('#modelRoutingForm').waitFor({ state: 'visible' });
     const routingConnectionId = await page.locator('#modelRoutingForm select[name="storyConnectionId"] option').nth(1).getAttribute('value');
@@ -81,7 +93,7 @@ try {
     await page.locator('[data-panel="hub"]').first().click();
     await page.locator('#view-hub').waitFor({ state: 'visible' });
 
-    const result = await page.evaluate(() => {
+    const result = await page.evaluate(({ connectionCountBefore, connectionCountAfterCreate, connectionCountAfterSave, newConnectionId, testValidation }) => {
         const data = JSON.parse(localStorage.getItem('reincarnation-web:v1'));
         const session = data.sessions.find(item => item.id === data.activeSessionId);
         return {
@@ -90,6 +102,11 @@ try {
             userProfileCount: window.__reincarnationApp.userProfiles().length,
             userProfile: window.__reincarnationApp.userProfiles().find(item => item.id === data.settings.activeUserProfileId),
             aiAssignments: data.settings.aiAssignments,
+            connectionCountBefore,
+            connectionCountAfterCreate,
+            connectionCountAfterSave,
+            newConnectionSaved: Boolean(newConnectionId && data.connections.some(item => item.id === newConnectionId)),
+            testValidation,
             strength: session.variables.stat_data['主角']['最终属性']['力量'],
             world: session.variables.stat_data['世界']['名称'],
             hasIframe: Boolean(document.querySelector('iframe')),
@@ -101,9 +118,9 @@ try {
             affectionNpcToNpc: window.__reincarnationApp.getAffection('甲', '乙'),
             affectionMissing: window.__reincarnationApp.getAffection('乙', '甲'),
         };
-    });
+    }, { connectionCountBefore, connectionCountAfterCreate, connectionCountAfterSave, newConnectionId, testValidation });
     console.log({ ...result, pageErrors: errors });
-    if (result.player !== '测试用户B' || result.userProfileCount < 2 || !result.activeUserProfileId || result.userProfile?.persona !== '这是用户B的长期设定。' || !result.aiAssignments?.storyConnectionId || result.aiAssignments.storyConnectionId !== result.aiAssignments.combatConnectionId || result.aiAssignments.combatConnectionId !== result.aiAssignments.shopConnectionId || result.strength < 1 || result.world !== '主神空间' || result.hasIframe || result.views < 11 || !result.promptReady || !result.floors.includes('/ 2 楼') || result.navCategories !== 2 || result.affectionNpcToPlayer !== 12 || result.affectionNpcToNpc !== -3 || result.affectionMissing !== 0 || errors.length) process.exitCode = 1;
+    if (result.player !== '测试用户B' || result.userProfileCount < 2 || !result.activeUserProfileId || result.userProfile?.persona !== '这是用户B的长期设定。' || !result.aiAssignments?.storyConnectionId || result.aiAssignments.storyConnectionId !== result.aiAssignments.combatConnectionId || result.aiAssignments.combatConnectionId !== result.aiAssignments.shopConnectionId || result.connectionCountAfterCreate !== result.connectionCountBefore + 1 || result.connectionCountAfterSave !== result.connectionCountAfterCreate || !result.newConnectionSaved || !result.testValidation?.includes('测试前请填写') || result.strength < 1 || result.world !== '主神空间' || result.hasIframe || result.views < 11 || !result.promptReady || !result.floors.includes('/ 2 楼') || result.navCategories !== 2 || result.affectionNpcToPlayer !== 12 || result.affectionNpcToNpc !== -3 || result.affectionMissing !== 0 || errors.length) process.exitCode = 1;
 } finally {
     await browser.close();
 }

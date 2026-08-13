@@ -45,18 +45,20 @@ try {
     assert.ok(shieldDraft.catalog.装备列表.filter(item => item.标签?.includes('盾')).every(item => item.类型 === 0));
     const merged = mergeApiCatalog(draft.catalog, { 装备列表: [{ 名称: 'API', 价格: 1, 原始属性: { 命中: 999 } }] }, draft.target);
     assert.equal(merged.装备列表[0].名称, 'API');
-    assert.notEqual(merged.装备列表[0].价格, 1);
-    assert.notEqual(merged.装备列表[0].命中, 999);
+    assert.equal(merged.装备列表[0].价格, 1);
+    assert.equal(merged.装备列表[0].原始属性.命中, 999);
     const emptyMerge = mergeApiCatalog(draft.catalog, {}, draft.target);
     assert.equal(emptyMerge.装备列表.length, draft.catalog.装备列表.length);
     const flatMerge = mergeApiCatalog(draft.catalog, { 商品列表: [{ 名称: 'flat', 类型: '武器', 描述: '兼容卡片扁平商品列表', 价格: 1 }] }, draft.target);
     assert.equal(flatMerge.装备列表[0].名称, 'flat');
-    assert.notEqual(flatMerge.装备列表[0].价格, 1);
+    assert.equal(flatMerge.装备列表[0].价格, 1);
     const skillDraft = generateShopDraft({ playerLevel: 3, target: { categories: ['skill'] }, seed: 'numeric-lock' });
     const originalConsume = skillDraft.catalog.技能列表[0].消耗;
-    const locked = mergeApiCatalog(skillDraft.catalog, { 技能列表: [{ 名称: '文案', 消耗: 999, 伤害: '999d20', 价格: 1 }] }, skillDraft.target);
-    assert.equal(locked.技能列表[0].消耗, originalConsume);
-    assert.notEqual(locked.技能列表[0].价格, 1);
+    const modelValues = mergeApiCatalog(skillDraft.catalog, { 技能列表: [{ 名称: '文案', 消耗: 999, 伤害: '999d20', 价格: 1 }] }, skillDraft.target);
+    assert.notEqual(modelValues.技能列表[0].消耗, originalConsume);
+    assert.equal(modelValues.技能列表[0].消耗, 999);
+    assert.equal(modelValues.技能列表[0].伤害, '999d20');
+    assert.equal(modelValues.技能列表[0].价格, 1);
 
     const response = await requestJson(null, appPort, '/api/shop/refresh', {
         characterName: '测试轮回者', playerLifeLevel: 'Ⅲ', playerLevel: 3, seed: 'api-seed', slotPreferences: ['武器'], target: { categories: ['equipment'] },
@@ -68,8 +70,14 @@ try {
     assert.equal(response.body.ok, true);
     assert.equal(response.body.source, 'api');
     assert.equal(response.body.catalog.装备列表[0].名称, 'API 定向烈焰刃');
-    assert.notEqual(response.body.catalog.装备列表[0].价格, 1);
+    assert.equal(response.body.catalog.装备列表[0].价格, 1);
     assert.equal(response.body.catalog.技能列表[0].名称, '保留技能');
+    // The server does not silently repair legacy catalogues. This deliberately
+    // remains the old value so the prompt/data source can be investigated.
+    assert.equal(response.body.catalog.技能列表[0].价格, 100);
+    assert.ok(response.body.apiTrace.prompt.includes('F 级价格只能是 10–99'));
+    assert.ok(response.body.apiTrace.responseText.includes('API 定向烈焰刃'));
+    assert.equal(response.body.apiTrace.response.装备列表[0].价格, 1);
     assert.ok(response.body.catalog.成员商库['测试轮回者']);
     assert.ok(mockRequests[0].max_tokens >= 30000);
 
@@ -117,11 +125,15 @@ try {
     const sameSeedHigh = generateShopDraft({ playerLevel: 9, target: { categories: ['equipment'] }, seed: 'independent-life-seed' });
     assert.deepEqual(sameSeedLow.catalog.装备列表.map(item => [item.品质, item.价格]), sameSeedHigh.catalog.装备列表.map(item => [item.品质, item.价格]));
     const prompt = shopModelPrompt({ draft: sameSeedLow.generated, target: sameSeedLow.target, playerLevel: 3, characterName: '提示词测试' });
-    assert.ok(prompt.includes('当前标签为Ⅲ'));
-    assert.ok(prompt.includes('与商品品质 F–SSS'));
+    assert.ok(prompt.includes('当前为Ⅲ'));
+    assert.ok(prompt.includes('和商品品质 F–SSS'));
     assert.ok(!prompt.includes('Ⅰ↔F'));
     assert.ok(!prompt.includes('阿拉伯数字'));
     assert.ok(!prompt.includes('生命层级：Ⅲ（3）'));
+    const skillPrompt = shopModelPrompt({ draft: generateShopDraft({ playerLevel: 1, target: { categories: ['skill'], qualityPreferences: ['F'] }, seed: 'prompt-numeric-visible' }).generated, target: { categories: ['skill'], qualityPreferences: ['F'] }, playerLevel: 1, characterName: '数值可追溯' });
+    assert.match(skillPrompt, /"伤害":"\d+d\d+"/);
+    assert.match(skillPrompt, /F\[10,99\]/);
+    assert.match(skillPrompt, /F 级价格只能是 10–99/);
 
     assert.deepEqual(CARD_PRICE_RANGES, { F: [10, 99], E: [100, 999], D: [1000, 4999], C: [5000, 19999], B: [20000, 79999], A: [80000, 319999], S: [320000, 1270000], SS: [1280000, 5110000], SSS: [5120000, Infinity] });
     assert.deepEqual(CARD_SKILL_ITEM_RANGES.D, { 技能伤害: [100, 250], 检定修正: [13, 18], 道具HP: [150, 600], 状态预算: 2 });
