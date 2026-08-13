@@ -50,6 +50,11 @@ try {
     const flatMerge = mergeApiCatalog(draft.catalog, { 商品列表: [{ 名称: 'flat', 类型: '武器', 描述: '兼容卡片扁平商品列表', 价格: 1 }] }, draft.target);
     assert.equal(flatMerge.装备列表[0].名称, 'flat');
     assert.notEqual(flatMerge.装备列表[0].价格, 1);
+    const skillDraft = generateShopDraft({ playerLevel: 12, target: { categories: ['skill'] }, seed: 'numeric-lock' });
+    const originalConsume = skillDraft.catalog.技能列表[0].消耗;
+    const locked = mergeApiCatalog(skillDraft.catalog, { 技能列表: [{ 名称: '文案', 消耗: 999, 伤害: '999d20', 价格: 1 }] }, skillDraft.target);
+    assert.equal(locked.技能列表[0].消耗, originalConsume);
+    assert.notEqual(locked.技能列表[0].价格, 1);
 
     const response = await requestJson(null, appPort, '/api/shop/refresh', {
         characterName: '测试轮回者', playerLevel: 12, seed: 'api-seed', slotPreferences: ['武器'], target: { categories: ['equipment'] },

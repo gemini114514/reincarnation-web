@@ -106,11 +106,11 @@ export function generateShopDraft({ playerLevel = 1, slotPreferences = [], targe
 }
 
 export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
-    const result = normalizeCatalog(draftCatalog); const incoming = normalizeCatalog(responseCatalog); const fields = ['名称', '标签', '描述', '效果', '特效', '特殊效果', '消耗', '道具类型', '伤害属性', '附带技能'];
+    const result = normalizeCatalog(draftCatalog); const incoming = normalizeCatalog(responseCatalog); const fields = ['名称', '标签', '描述', '效果', '特效', '特殊效果', '道具类型', '伤害属性'];
     for (const category of target.categories) { const key = CATEGORY_KEYS[category]; const items = incoming[key]?.length ? incoming[key] : (draftCatalog[key] || []); result[key] = items.slice(0, draftCatalog[key]?.length || items.length || 50).map((item, index) => { const base = draftCatalog[key]?.[index] || {}; const safe = Object.fromEntries(fields.filter(field => item[field] !== undefined).map(field => [field, item[field]])); return { ...deepClone(base), ...safe, id: base.id || item.id }; }); }
     return result;
 }
 
 export function shopModelPrompt({ draft, target, playerLevel, characterName, query }) {
-    return `你是《轮回战场》V3.2.6 卡片的 forge_shop 文案填充器。严格按输入草案和卡片规则工作。玩家等级只读，不得自行改等级、品质、价格、伤害骰、命中、DEF、MDEF、被动属性预算或任何数值。${target?.autonomous ? '你必须自主决定刷新目标，先输出刷新目标.categories和刷新目标.slotPreferences；只返回你决定刷新的类别，其余列表为空。' : ''}输出单个 JSON 对象，键必须包含 刷新目标、血统列表、技能列表、装备列表、道具列表、升级列表。只允许补全名称、标签、描述、效果、特效、伤害属性、道具类型和自然语言消耗说明。当前目标：${JSON.stringify(target)}；玩家等级：${playerLevel}；人物：${characterName || '轮回者'}；额外要求：${query || '无'}。\n草案：${JSON.stringify(draft)}`;
+    return `你是《轮回战场》V3.2.6 卡片的 forge_shop 文案填充器。严格按输入草案和卡片规则工作。玩家等级只读，不得自行改等级、品质、价格、伤害骰、命中、DEF、MDEF、被动属性预算、消耗或任何数值。${target?.autonomous ? '你必须自主决定刷新目标，先输出刷新目标.categories和刷新目标.slotPreferences；只返回你决定刷新的类别，其余列表为空。' : ''}输出单个 JSON 对象，键必须包含 刷新目标、血统列表、技能列表、装备列表、道具列表、升级列表；也兼容直接返回商品列表。只允许补全名称、标签、描述、效果、特效、伤害属性和道具类型，不得改动附带技能引用。当前目标：${JSON.stringify(target)}；玩家等级：${playerLevel}；人物：${characterName || '轮回者'}；额外要求：${query || '无'}。\n草案：${JSON.stringify(draft)}`;
 }
