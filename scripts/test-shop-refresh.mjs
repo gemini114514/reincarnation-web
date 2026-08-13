@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { CARD_EQUIP_QUALITY_RANGES, CARD_LIFE_TIER_RANGES, CARD_PRICE_RANGES, CARD_SKILL_ITEM_RANGES, generateShopDraft, mergeApiCatalog, normalizeLifeLevel } from '../shop/engine.js';
+import { CARD_EQUIP_QUALITY_RANGES, CARD_LIFE_TIER_RANGES, CARD_PRICE_RANGES, CARD_SKILL_ITEM_RANGES, generateShopDraft, mergeApiCatalog, normalizeLifeLevel, shopModelPrompt } from '../shop/engine.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const appPort = 4186;
@@ -30,7 +30,7 @@ const mock = http.createServer((request, response) => {
     let text = ''; request.on('data', chunk => { text += chunk; }); request.on('end', () => {
         const payload = JSON.parse(text); mockRequests.push(payload);
         response.setHeader('Content-Type', 'application/json');
-        response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ 刷新目标: { categories: ['equipment'], slotPreferences: ['武器'] }, 装备列表: [{ 名称: 'API 定向烈焰刃', 标签: ['API'], 描述: '由模型补全的文案', 价格: 1, 原始属性: { 命中: 999 } }] }) } }], usage: { prompt_tokens: 42, completion_tokens: 18, total_tokens: 60 } }));
+        response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: JSON.stringify({ 刷新目标: { categories: ['equipment'], slotPreferences: ['武器'], qualityPreferences: ['SS'] }, 装备列表: [{ 名称: 'API 定向烈焰刃', 标签: ['API'], 描述: '由模型补全的文案', 价格: 1, 原始属性: { 命中: 999 } }] }) } }], usage: { prompt_tokens: 42, completion_tokens: 18, total_tokens: 60 } }));
     });
 });
 await new Promise(resolve => mock.listen(mockPort, '127.0.0.1', resolve));
@@ -38,7 +38,8 @@ const app = spawn(process.execPath, ['server.js', '--api-only'], { cwd: root, en
 try {
     await waitFor(`http://127.0.0.1:${appPort}/api/health`);
     const draft = generateShopDraft({ playerLevel: 6, slotPreferences: ['武器'], target: { categories: ['equipment'] }, seed: 'test-seed' });
-    assert.equal(draft.baseQuality, 'A');
+    assert.equal(draft.baseQuality, null);
+    assert.deepEqual(draft.qualitySet, ['D', 'E', 'F']);
     assert.ok(draft.catalog.装备列表.length >= 3);
     const shieldDraft = generateShopDraft({ playerLevel: 3, slotPreferences: ['盾'], target: { categories: ['equipment'] }, seed: 'shield-type' });
     assert.ok(shieldDraft.catalog.装备列表.filter(item => item.标签?.includes('盾')).every(item => item.类型 === 0));
@@ -76,7 +77,9 @@ try {
     assert.equal(auto.status, 200);
     assert.equal(auto.body.source, 'api');
     assert.deepEqual(auto.body.target.categories, ['equipment']);
+    assert.deepEqual(auto.body.target.qualityPreferences, ['SS']);
     assert.ok(auto.body.catalog.装备列表.length > 0);
+    assert.ok(auto.body.catalog.装备列表.every(item => item.品质 === 'SS'));
     assert.equal(auto.body.catalog.技能列表.length, 0);
 
     const slotsAlias = await requestJson(null, appPort, '/api/shop/refresh', { characterName: '槽位别名', playerLifeLevel: 'Ⅲ', seed: 'slots-alias', target: { categories: ['equipment'], slots: ['盾'] } });
@@ -87,14 +90,16 @@ try {
     assert.equal(local.status, 200);
     assert.equal(local.body.source, 'local');
     assert.ok(local.body.catalog.技能列表.length >= 2);
-    assert.deepEqual(local.body.priceRange, [10, 99]);
+    assert.equal(local.body.qualityPolicy, 'independent');
+    assert.ok(local.body.catalog.技能列表.some(item => item.品质 === 'D'));
+    for (const item of local.body.catalog.技能列表) assert.ok(item.价格 >= CARD_PRICE_RANGES[item.品质][0] && (CARD_PRICE_RANGES[item.品质][1] === Infinity || item.价格 <= CARD_PRICE_RANGES[item.品质][1]));
     const invalidLevel = await requestJson(null, appPort, '/api/shop/refresh', { characterName: '非法层级回退', playerLevel: 50, seed: 'invalid-level' });
     assert.equal(invalidLevel.status, 200);
     assert.equal(invalidLevel.body.playerLevel, 1);
     assert.equal(invalidLevel.body.playerLifeLevel, 'Ⅰ');
 
-    // Card source of truth: life levels are exactly Ⅰ–Ⅸ and map one-to-one
-    // to F–SSS; the price bands are the embedded character-book values.
+    // Card source of truth: life levels are exactly Ⅰ–Ⅸ.  They are not a
+    // quality scale; product quality and price are independently selected.
     assert.equal(normalizeLifeLevel('Ⅰ'), 1);
     assert.equal(normalizeLifeLevel('III'), 3);
     assert.equal(normalizeLifeLevel('9'), 9);
@@ -102,13 +107,21 @@ try {
     assert.equal(normalizeLifeLevel('50'), 1);
     assert.deepEqual(CARD_LIFE_TIER_RANGES, { 'Ⅰ': [1, 29], 'Ⅱ': [30, 99], 'Ⅲ': [100, 299], 'Ⅳ': [300, 999], 'Ⅴ': [1000, 2999], 'Ⅵ': [3000, 9999], 'Ⅶ': [10000, 29999], 'Ⅷ': [30000, 99999], 'Ⅸ': [100000, Infinity] });
     const levelOne = generateShopDraft({ playerLevel: 1, target: { categories: ['all'] }, seed: 'calibration-level-1' });
-    assert.equal(levelOne.baseQuality, 'F');
-    assert.deepEqual(levelOne.priceRange, [10, 99]);
-    for (const key of ['血统列表', '技能列表', '装备列表', '道具列表']) for (const item of levelOne.catalog[key]) assert.equal(item.品质, 'F');
+    assert.equal(levelOne.baseQuality, null);
+    assert.ok(levelOne.catalog.装备列表.some(item => item.品质 === 'D'));
     const levelThree = generateShopDraft({ playerLevel: 'Ⅲ', target: { categories: ['all'] }, seed: 'calibration-level-3' });
-    assert.equal(levelThree.baseQuality, 'D');
-    assert.deepEqual(levelThree.priceRange, [1000, 4999]);
-    for (const key of ['血统列表', '技能列表', '装备列表', '道具列表']) for (const item of levelThree.catalog[key]) assert.equal(item.品质, 'D');
+    assert.equal(levelThree.baseQuality, null);
+    assert.ok(levelThree.catalog.装备列表.some(item => item.品质 === 'D'));
+
+    const sameSeedLow = generateShopDraft({ playerLevel: 1, target: { categories: ['equipment'] }, seed: 'independent-life-seed' });
+    const sameSeedHigh = generateShopDraft({ playerLevel: 9, target: { categories: ['equipment'] }, seed: 'independent-life-seed' });
+    assert.deepEqual(sameSeedLow.catalog.装备列表.map(item => [item.品质, item.价格]), sameSeedHigh.catalog.装备列表.map(item => [item.品质, item.价格]));
+    const prompt = shopModelPrompt({ draft: sameSeedLow.generated, target: sameSeedLow.target, playerLevel: 3, characterName: '提示词测试' });
+    assert.ok(prompt.includes('当前标签为Ⅲ'));
+    assert.ok(prompt.includes('与商品品质 F–SSS'));
+    assert.ok(!prompt.includes('Ⅰ↔F'));
+    assert.ok(!prompt.includes('阿拉伯数字'));
+    assert.ok(!prompt.includes('生命层级：Ⅲ（3）'));
 
     assert.deepEqual(CARD_PRICE_RANGES, { F: [10, 99], E: [100, 999], D: [1000, 4999], C: [5000, 19999], B: [20000, 79999], A: [80000, 319999], S: [320000, 1270000], SS: [1280000, 5110000], SSS: [5120000, Infinity] });
     assert.deepEqual(CARD_SKILL_ITEM_RANGES.D, { 技能伤害: [100, 250], 检定修正: [13, 18], 道具HP: [150, 600], 状态预算: 2 });
@@ -117,16 +130,14 @@ try {
     const effectRecord = value => Object.values(value || {}).every(entry => typeof entry === 'string');
     for (let level = 1; level <= 9; level += 1) {
         const check = generateShopDraft({ playerLevel: level, target: { categories: ['all'] }, seed: `schema-${level}` });
-        const quality = [...qualities][level - 1];
-        assert.equal(check.baseQuality, quality);
-        assert.deepEqual(check.priceRange, CARD_PRICE_RANGES[quality]);
-        const assertPrice = item => assert.ok(item.价格 >= check.priceRange[0] && (check.priceRange[1] === Infinity || item.价格 <= check.priceRange[1]), `${quality} price out of card band: ${item.价格}`);
+        assert.equal(check.baseQuality, null);
+        const assertPrice = item => assert.ok(item.价格 >= CARD_PRICE_RANGES[item.品质][0] && (CARD_PRICE_RANGES[item.品质][1] === Infinity || item.价格 <= CARD_PRICE_RANGES[item.品质][1]), `${item.品质} price out of card band: ${item.价格}`);
         for (const item of check.catalog.血统列表) {
             assertPrice(item);
             assert.deepEqual(Object.keys(item.原始属性).sort(), ['力量', '敏捷', '体质', '精神', '魅力'].sort());
             assert.ok(Object.values(item.原始属性).every(value => qualities.has(value)));
-            const mainCount = Object.values(item.原始属性).filter(value => value === quality).length;
-            assert.ok(quality === 'F' ? mainCount === 5 : mainCount <= 2 && mainCount >= 2);
+            const mainCount = Object.values(item.原始属性).filter(value => value === item.品质).length;
+            assert.ok(item.品质 === 'F' ? mainCount === 5 : mainCount <= 2 && mainCount >= 2);
             assert.ok(effectRecord(item.效果));
         }
         for (const item of check.catalog.技能列表) {
@@ -152,7 +163,8 @@ try {
     const upgradeCheck = generateShopDraft({ playerLevel: 'Ⅲ', target: { categories: ['upgrade'] }, seed: 'schema-upgrade', hero: { 技能: { 旧技能: { 品质: 'F', 类型: 0, 消耗: '5', 效果: { 说明: '旧' } } }, 血统: { 旧血统: { 品质: 'F', 原始属性: { 力量: 'F', 敏捷: 'F', 体质: 'F', 精神: 'F', 魅力: 'F' } } }, 装备: { 旧武器: { 品质: 'F', 类型: 0, 原始属性: { ATK: 'F' } } } } });
     assert.equal(upgradeCheck.catalog.升级列表.length, 3);
     for (const item of upgradeCheck.catalog.升级列表) {
-        assert.ok(item.价格 >= upgradeCheck.priceRange[0] && (upgradeCheck.priceRange[1] === Infinity || item.价格 <= upgradeCheck.priceRange[1]));
+        assert.ok(item.价格 >= CARD_PRICE_RANGES[item.品质][0] && (CARD_PRICE_RANGES[item.品质][1] === Infinity || item.价格 <= CARD_PRICE_RANGES[item.品质][1]));
+        assert.equal(item.品质, 'E');
         assert.ok(Number.isInteger(item.类型) && item.类型 >= 0 && item.类型 <= 8);
         assert.equal(typeof item.替换目标, 'string');
         assert.equal(typeof item.所属大类, 'string');
@@ -162,8 +174,9 @@ try {
     const forge = await requestJson(null, appPort, '/api/shop/forge', { characterName: '脚本调用', args: { 生命层级: 'Ⅸ', 槽位偏好: ['武器'], 生成: '商店', NPC: [] } });
     assert.equal(forge.status, 200);
     assert.equal(forge.body.tool, 'forge_shop');
-    assert.equal(forge.body.baseQuality, 'SSS');
+    assert.equal(forge.body.baseQuality, null);
     assert.equal(forge.body.playerLevel, 9);
+    assert.ok(forge.body.catalog.装备列表.some(item => item.品质 === 'D'));
     assert.ok(forge.body.catalog.装备列表.length > 0);
     assert.ok(Array.isArray(forge.body.商品列表));
     assert.ok(forge.body.商品列表.length >= forge.body.catalog.装备列表.length);

@@ -215,6 +215,7 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
             currentCatalog: body.currentCatalog || {},
         });
         let catalog = draft.catalog;
+        let effectiveDraft = draft;
         let source = 'local';
         const warnings = [];
         let apiTrace = null;
@@ -246,9 +247,13 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
                 const modelSelection = responseCatalog.刷新目标 || responseCatalog.refreshTarget || responseCatalog.target || {};
                 const modelTarget = autonomousTarget ? normalizeTarget({ ...modelSelection, categories: modelSelection.categories || modelSelection.分类 || modelSelection.category || modelSelection.categories列表 }) : draft.target;
                 const selectedTarget = autonomousTarget && modelTarget.categories.length ? modelTarget : draft.target;
-                const selectedDraft = autonomousTarget && selectedTarget.categories.join(',') !== draft.target.categories.join(',') ? generateShopDraft({ playerLevel, slotPreferences: selectedTarget.slots, target: selectedTarget, seed: body.seed, hero: body.hero || {}, currentCatalog: body.currentCatalog || {} }) : draft;
+                const targetChanged = selectedTarget.categories.join(',') !== draft.target.categories.join(',')
+                    || selectedTarget.slots.join(',') !== draft.target.slots.join(',')
+                    || selectedTarget.qualityPreferences.join(',') !== draft.target.qualityPreferences.join(',');
+                const selectedDraft = autonomousTarget && targetChanged ? generateShopDraft({ playerLevel, slotPreferences: selectedTarget.slots, target: selectedTarget, seed: body.seed, hero: body.hero || {}, currentCatalog: body.currentCatalog || {} }) : draft;
                 catalog = mergeApiCatalog(selectedDraft.catalog, responseCatalog, selectedTarget);
-                draft.target = selectedTarget;
+                effectiveDraft = selectedDraft;
+                effectiveDraft.target = selectedTarget;
                 source = 'api';
                 apiTrace.usage = responseBody.usage || responseBody.usageMetadata || null;
             } catch (error) {
@@ -268,13 +273,16 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
             warnings,
             refreshId: `shop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             generatedAt: new Date().toISOString(),
-            rulesetVersion: draft.rulesetVersion,
-            baseQuality: draft.baseQuality,
-            priceRange: draft.priceRange,
-            seed: draft.seed,
-            target: draft.target,
-            playerLevel: draft.playerLevel,
-            playerLifeLevel: lifeLevelRoman(draft.playerLevel),
+            rulesetVersion: effectiveDraft.rulesetVersion,
+            baseQuality: effectiveDraft.baseQuality,
+            priceRange: effectiveDraft.priceRange,
+            qualitySet: effectiveDraft.qualitySet,
+            qualityPolicy: effectiveDraft.qualityPolicy,
+            priceRanges: effectiveDraft.priceRanges,
+            seed: effectiveDraft.seed,
+            target: effectiveDraft.target,
+            playerLevel: effectiveDraft.playerLevel,
+            playerLifeLevel: lifeLevelRoman(effectiveDraft.playerLevel),
             // Card forge_shop returns a localized flat 商品列表. Keep that
             // compatibility view alongside the app's categorized catalogue.
             商品列表: shopItems,

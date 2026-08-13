@@ -2,11 +2,13 @@ import { DeterministicRng, deepClone, seed256 } from '../combat/util.js';
 
 // This module is a server-safe port of the embedded V3.2.6 card rules.
 // The card has nine life tiers (Roman Ⅰ–Ⅸ), not a 1–50 player-level scale.
-export const SHOP_RULESET_VERSION = 'v3.2.6-card-life-tier-ix';
+export const SHOP_RULESET_VERSION = 'v3.2.6-card-independent-life-quality';
 export const QUALITY_ORDER = ['F', 'E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
 export const LIFE_LEVEL_ROMAN = ['Ⅰ', 'Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ', 'Ⅵ', 'Ⅶ', 'Ⅷ', 'Ⅸ'];
-export const LIFE_LEVEL_TO_QUALITY = Object.fromEntries(LIFE_LEVEL_ROMAN.map((roman, index) => [roman, QUALITY_ORDER[index]]));
-export const QUALITY_LEVEL_RANGES = Object.fromEntries(QUALITY_ORDER.map((quality, index) => [quality, [index + 1, index + 1]]));
+// The opening card stocks D/E/F goods regardless of the protagonist's life
+// tier.  A model may request another quality explicitly through
+// target.qualityPreferences; there is deliberately no life-tier lookup here.
+export const CARD_SHOP_DEFAULT_QUALITY_SEQUENCE = ['D', 'E', 'F'];
 // These are copied from the card's embedded auxiliary calculator/worldbook,
 // not from the legacy AIRPcard/数值.txt 1–50 forge helper.
 export const CARD_LIFE_TIER_RANGES = {
@@ -74,11 +76,24 @@ export function normalizeLifeLevel(value, fallback = 1) {
 export function lifeLevelRoman(value) { return LIFE_LEVEL_ROMAN[normalizeLifeLevel(value) - 1] || LIFE_LEVEL_ROMAN[0]; }
 const num = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 const unique = value => [...new Set((Array.isArray(value) ? value : []).map(item => String(item || '').trim()).filter(Boolean))];
-const qualityFromLevel = level => QUALITY_ORDER[normalizeLifeLevel(level) - 1] || QUALITY_ORDER[0];
-const progress = level => { const q = qualityFromLevel(level); if (!q) return 0; const [lo, hi] = QUALITY_LEVEL_RANGES[q]; return (level - lo) / Math.max(hi - lo, 1); };
-const windowRange = (range, level, ratio = .4) => { const [min, max] = range; const span = max - min; if (span <= 0) return [min, max]; const window = span < 2 ? span : Math.max(1, span * ratio); const start = min + (span - window) * progress(level); return [Math.max(min, Math.round(start)), Math.min(max, Math.round(start + window))]; };
-const levelRule = (category, level) => { const quality = qualityFromLevel(level); const base = RULES[category]?.[quality]; if (!base) return null; if (category === '武器') return { 命中: windowRange(base.命中, level, .7), 期望伤害: windowRange(base.期望伤害, level, .4) }; if (category === '技能') return { 期望伤害: windowRange(CARD_SKILL_ITEM_RANGES[quality].技能伤害, level, .4), 消耗: windowRange(base.消耗, level, .5) }; if (category === '血统') return { ...base, 预算: windowRange(base.预算, level, .45) }; return { DEF: windowRange(base.DEF, level, 1), MDEF: windowRange(base.MDEF, level, 1) }; };
-const priceRangeForLevel = level => [...(RULES.价格区间[qualityFromLevel(level)] || RULES.价格区间.F)];
+const windowRange = (range, ratio = .4) => { const [min, max] = range; const span = max - min; if (span <= 0) return [min, max]; const window = span < 2 ? span : Math.max(1, span * ratio); return [min, Math.min(max, Math.round(min + window))]; };
+// Product balance is selected by its own F–SSS quality.  Life tier is never
+// passed into this function, preventing accidental life→quality conversion.
+const levelRule = (category, qualityValue) => {
+    const quality = normalizeQualityLetter(qualityValue);
+    const base = RULES[category]?.[quality];
+    if (!base) return null;
+    if (category === '武器') return { 命中: windowRange(base.命中, .7), 期望伤害: windowRange(base.期望伤害, .4) };
+    if (category === '技能') return { 期望伤害: windowRange(CARD_SKILL_ITEM_RANGES[quality].技能伤害, .4), 消耗: windowRange(base.消耗, .5) };
+    if (category === '血统') return { ...base, 预算: windowRange(base.预算, .45) };
+    return { DEF: windowRange(base.DEF, 1), MDEF: windowRange(base.MDEF, 1) };
+};
+const priceRangeForQuality = quality => [...(CARD_PRICE_RANGES[normalizeQualityLetter(quality)] || CARD_PRICE_RANGES.F)];
+const nextQuality = quality => QUALITY_ORDER[Math.min(QUALITY_ORDER.indexOf(normalizeQualityLetter(quality)) + 1, QUALITY_ORDER.length - 1)];
+const qualityForIndex = (index, preferences = []) => {
+    const requested = preferences.length ? preferences : CARD_SHOP_DEFAULT_QUALITY_SEQUENCE;
+    return normalizeQualityLetter(requested[index % requested.length]);
+};
 const randomInt = (rng, min, max) => rng.int(Math.ceil(min), Math.floor(max));
 const getStatInRange = (rng, rank, total, min, max) => { const ratio = rank / Math.max(total - 1, 1); const subMin = min + Math.floor((max - min) * Math.max(0, ratio - .25)); const subMax = min + Math.ceil((max - min) * Math.min(1, ratio + .25)); return randomInt(rng, subMin, subMax); };
 const tieredPrices = (rng, range, count) => {
@@ -96,7 +111,7 @@ const diceFromExpected = (target, min, max) => { const faces = [4, 6, 8, 10, 12,
 const randomUnit = rng => rng.nextUint32() / 0x100000000;
 const diceForRank = (rng, rank, total, min, max) => { const ratio = rank / Math.max(total - 1, 1); const base = min + (max - min) * ratio; const jitter = (max - min) * .15 * (randomUnit(rng) * 2 - 1); return diceFromExpected(Math.max(min, Math.min(max, base + jitter)), min, max); };
 const profileText = (rng, text) => { const parts = String(text || '').split(/[\/／]/).map(v => v.trim()).filter(Boolean); return parts.length ? parts[randomInt(rng, 0, parts.length - 1)] : text; };
-const normalizeTarget = (target = {}) => { const raw = Array.isArray(target.categories) && target.categories.length ? target.categories : target.category ? [target.category] : ['all']; const categories = raw.includes('all') ? Object.keys(CATEGORY_KEYS) : unique(raw).map(item => CATEGORY_ALIASES[item] || item).filter(item => CATEGORY_KEYS[item]); const slots = unique(target.slotPreferences || target.slots).filter(item => VALID_SLOTS.includes(item)); return { categories: categories.length ? categories : Object.keys(CATEGORY_KEYS), slots, count: Math.max(0, Math.min(50, Math.round(num(target.count, 0)))), query: String(target.query || '').slice(0, 500), autonomous: Boolean(target.autonomous) }; };
+const normalizeTarget = (target = {}) => { const raw = Array.isArray(target.categories) && target.categories.length ? target.categories : target.category ? [target.category] : ['all']; const categories = raw.includes('all') ? Object.keys(CATEGORY_KEYS) : unique(raw).map(item => CATEGORY_ALIASES[item] || item).filter(item => CATEGORY_KEYS[item]); const slots = unique(target.slotPreferences || target.slots).filter(item => VALID_SLOTS.includes(item)); const requestedQualities = target.qualityPreferences ?? target.品质偏好 ?? target.qualities ?? target.品质; const qualityPreferences = unique(Array.isArray(requestedQualities) ? requestedQualities : requestedQualities ? [requestedQualities] : []).map(item => String(item).trim().toUpperCase()).filter(item => CARD_QUALITY_KEYS.has(item)); return { categories: categories.length ? categories : Object.keys(CATEGORY_KEYS), slots, qualityPreferences, count: Math.max(0, Math.min(50, Math.round(num(target.count, 0)))), query: String(target.query || '').slice(0, 500), autonomous: Boolean(target.autonomous) }; };
 export { normalizeTarget };
 
 export function emptyCatalog() { return { 血统列表: [], 技能列表: [], 装备列表: [], 道具列表: [], 升级列表: [], 成员商库: {} }; }
@@ -117,9 +132,11 @@ const entityLifeLevel = item => {
     if (!item || typeof item !== 'object') return 0;
     if (item.层级 !== undefined) return normalizeLifeLevel(item.层级);
     if (item.位阶 !== undefined) return normalizeLifeLevel(item.位阶);
-    if (item.等级 !== undefined) return normalizeLifeLevel(item.等级);
-    const quality = normalizeQualityLetter(item.品质, '');
-    return QUALITY_ORDER.indexOf(quality) + 1;
+    // Missing life-tier metadata is unknown, not a quality-derived tier.  Use
+    // the lowest life tier as a conservative upgrade eligibility default.
+    return item.等级 !== undefined && Number.isInteger(Number(item.等级))
+        ? normalizeLifeLevel(item.等级)
+        : 1;
 };
 const sourceEntries = source => Object.entries(source || {}).filter(([, item]) => item && typeof item === 'object' && item.状态 !== '被夺取' && entityLifeLevel(item) > 0);
 const diceExpected = value => { const match = String(value || '').replace(/\s/g, '').match(/^(\d+)d(\d+)$/i); return match ? Number(match[1]) * (Number(match[2]) + 1) / 2 : null; };
@@ -129,15 +146,18 @@ const upgradePassive = (sourceStats, targetBudget, rank, rng) => { const ps = de
 // Card entity rule: 0 hand-held, 1 glove, 2 head, 3 chest, 4 leg,
 // 5 shoes, 6 cape, 7 accessory, 8 world relic.  Type 8 is not a shield.
 const EQUIPMENT_SLOT_BY_TYPE = ['武器', '手套', '头盔', '铠甲', '腿甲', '鞋子', '披风', '饰品', '世界遗物'];
-const upgradeItems = (hero, level, range, rng) => {
+const upgradeItems = (hero, level, rng, qualityPreferences = []) => {
     const list = [];
-    const quality = qualityFromLevel(level);
+    let upgradeIndex = 0;
     const add = (source, type) => {
         for (const [name, old] of sourceEntries(source)) {
             if (entityLifeLevel(old) >= level) continue;
+            const quality = qualityPreferences.length ? qualityForIndex(upgradeIndex, qualityPreferences) : nextQuality(old.品质);
+            const range = priceRangeForQuality(quality);
             const normal = tieredPrices(rng, range, 1)[0];
+            upgradeIndex += 1;
             const item = {
-                id: nextId('up', rng), 名称: name, 等级: level, 品质: quality,
+                id: nextId('up', rng), 名称: name, 品质: quality,
                 // The embedded card only defines the quality price bands. Upgrade
                 // entries are shop entries too; do not apply the old, non-card
                 // 30% discount here (it pushed SSS upgrades below 5,120,000).
@@ -191,8 +211,9 @@ const CARD_QUALITY_KEYS = new Set(QUALITY_ORDER);
 const normalizeQualityLetter = (value, fallback = 'F') => {
     const text = String(value ?? '').trim().toUpperCase();
     if (CARD_QUALITY_KEYS.has(text)) return text;
-    const roman = LIFE_LEVEL_ROMAN.indexOf(String(value ?? '').trim());
-    return roman >= 0 ? QUALITY_ORDER[roman] : fallback;
+    // Roman life-tier labels are not quality labels.  Never silently convert
+    // Ⅰ–Ⅸ (or Arabic life-tier input) into F–SSS here.
+    return fallback;
 };
 const qualityAttributeRecord = (quality, bias = 0) => {
     const normalized = normalizeQualityLetter(quality);
@@ -263,16 +284,77 @@ const convertShopItem = (item = {}) => {
 };
 
 export function generateShopDraft({ playerLevel = 1, slotPreferences = [], target = {}, seed, hero = {}, currentCatalog = {} } = {}) {
-    const level = normalizeLifeLevel(playerLevel); const normalized = normalizeTarget({ ...target, slotPreferences }); const rng = new DeterministicRng(seed256(seed || `${level}:${JSON.stringify(normalized)}`)); const range = priceRangeForLevel(level); const quality = qualityFromLevel(level); const generated = emptyCatalog(); const skillIds = []; const has = category => normalized.categories.includes(category);
-    if (has('upgrade')) generated.升级列表 = upgradeItems(hero, level, range, rng);
-    if (has('skill')) { const count = randomInt(rng, 2, 3); const prices = tieredPrices(rng, range, count); const rule = levelRule('技能', level); generated.技能列表 = Array.from({ length: count }, (_, rank) => { const id = nextId('sk', rng); skillIds.push(id); return { id, 名称: '___FILL_INFO___', 等级: level, 品质: quality, 类型: '技能', 技能类型分类: '主动', 价格: prices[rank], 伤害: diceForRank(rng, rank, count, rule.期望伤害[0], rule.期望伤害[1]), 伤害属性: '___FILL_INFO___', 消耗: getStatInRange(rng, rank, count, rule.消耗[0], rule.消耗[1]), 标签: ['攻击', '伤害'], 效果: '___FILL_INFO___', 描述: '___FILL_INFO___' }; }); }
-    if (has('bloodline')) { const count = randomInt(rng, 2, 3); const prices = tieredPrices(rng, range, count); const rule = levelRule('血统', level); generated.血统列表 = Array.from({ length: count }, (_, rank) => { const item = { id: nextId('bl', rng), 名称: '___FILL_INFO___', 等级: level, 品质: quality, 类型: '血统', _attributeRank: rank, 价格: prices[rank], 被动属性: bloodlineStats(getStatInRange(rng, rank, count, rule.预算[0], rule.预算[1]), rank) }; if (rule.附赠技能品质 !== null && skillIds.length) item.附带技能 = skillIds[rank % skillIds.length]; return item; }); }
-    if (has('equipment')) for (const slot of SLOT_TABLE) { const preferred = normalized.slots.includes(slot.槽位) || (slot.槽位 === '武器' && normalized.slots.includes('法术武器')); const count = slot.槽位 === '武器' ? (preferred ? randomInt(rng, 3, 4) : randomInt(rng, 2, 3)) : slot.子类型 === '防具' ? (preferred ? randomInt(rng, 2, 3) : randomInt(rng, 1, 2)) : (normalized.slots.length ? randomInt(rng, 0, 1) : randomInt(rng, 0, 2)); if (count <= 0) continue; const prices = tieredPrices(rng, range, count); const rule = slot.子类型 === '武器' ? levelRule('武器', level) : levelRule(slot.防具类型, level); for (let rank = 0; rank < count; rank += 1) { const item = { id: nextId('eq', rng), 名称: '___FILL_INFO___', 类型: '装备', 等级: level, 品质: quality, 价格: prices[rank], 子类型: slot.子类型, 槽位: slot.槽位, 描述: '___FILL_INFO___' }; if (slot.子类型 === '武器') { const magic = normalized.slots.includes('法术武器') && !normalized.slots.includes('武器') ? true : normalized.slots.includes('法术武器') && normalized.slots.includes('武器') ? rank % 2 === 1 : randomUnit(rng) < .35; item._magic = magic; const profile = (magic ? ARTIFACT_PROFILES : WEAPON_PROFILES).filter(p => QUALITY_ORDER.indexOf(p.min) <= Math.min(QUALITY_ORDER.indexOf(quality) + (randomUnit(rng) < .18 ? 1 : 0), QUALITY_ORDER.indexOf('C'))); item.命中 = getStatInRange(rng, rank, count, rule.命中[0], rule.命中[1]); item.伤害 = diceForRank(rng, rank, count, rule.期望伤害[0], rule.期望伤害[1]); const picked = profile[randomInt(rng, 0, Math.max(0, profile.length - 1))] || (magic ? ARTIFACT_PROFILES : WEAPON_PROFILES)[0]; item.标签 = unique([profileText(rng, picked.type), profileText(rng, picked.mode), magic ? '法术' : '物理', '攻击', '武器']); } else if (slot.子类型 === '防具') { item.DEF = getStatInRange(rng, rank, count, rule.DEF[0], rule.DEF[1]); item.MDEF = getStatInRange(rng, rank, count, rule.MDEF[0], rule.MDEF[1]); item.标签 = ['轻便', '防具']; if (!['腿甲', '头盔'].includes(slot.槽位)) item.标签 = ['防具']; } else { item.特效 = '___FILL_INFO___'; item.标签 = slot.槽位 === '鞋子' ? ['轻便', '脱身', '饰品'] : ['特殊', '饰品']; } generated.装备列表.push(item); } }
-    if (has('item')) { const count = randomInt(rng, 2, 3); const prices = tieredPrices(rng, range, count); generated.道具列表 = Array.from({ length: count }, (_, rank) => ({ id: nextId('it', rng), 名称: '___FILL_INFO___', 类型: '道具', 等级: level, 品质: quality, 价格: prices[rank], 数量: 1, 道具类型: '___FILL_INFO___', 效果: '___FILL_INFO___', 标签: rank % 2 === 0 ? ['脱身'] : ['潜行'], 描述: '___FILL_INFO___' })); }
+    const level = normalizeLifeLevel(playerLevel);
+    const normalized = normalizeTarget({ ...target, slotPreferences });
+    const resolvedSeed = seed || `${level}:${JSON.stringify(normalized)}`;
+    const rng = new DeterministicRng(seed256(resolvedSeed));
+    const generated = emptyCatalog();
+    const skillIds = [];
+    const has = category => normalized.categories.includes(category);
+    const productQuality = index => qualityForIndex(index, normalized.qualityPreferences);
+    const productPrice = quality => tieredPrices(rng, priceRangeForQuality(quality), 1)[0];
+
+    if (has('upgrade')) generated.升级列表 = upgradeItems(hero, level, rng, normalized.qualityPreferences);
+    if (has('skill')) {
+        const count = randomInt(rng, 2, 3);
+        generated.技能列表 = Array.from({ length: count }, (_, rank) => {
+            const quality = productQuality(rank);
+            const rule = levelRule('技能', quality);
+            const id = nextId('sk', rng);
+            skillIds.push(id);
+            return { id, 名称: '___FILL_INFO___', 品质: quality, 类型: '技能', 技能类型分类: '主动', 价格: productPrice(quality), 伤害: diceForRank(rng, rank, count, rule.期望伤害[0], rule.期望伤害[1]), 伤害属性: '___FILL_INFO___', 消耗: getStatInRange(rng, rank, count, rule.消耗[0], rule.消耗[1]), 标签: ['攻击', '伤害'], 效果: '___FILL_INFO___', 描述: '___FILL_INFO___' };
+        });
+    }
+    if (has('bloodline')) {
+        const count = randomInt(rng, 2, 3);
+        generated.血统列表 = Array.from({ length: count }, (_, rank) => {
+            const quality = productQuality(rank);
+            const rule = levelRule('血统', quality);
+            const item = { id: nextId('bl', rng), 名称: '___FILL_INFO___', 品质: quality, 类型: '血统', _attributeRank: rank, 价格: productPrice(quality), 被动属性: bloodlineStats(getStatInRange(rng, rank, count, rule.预算[0], rule.预算[1]), rank) };
+            if (rule.附赠技能品质 !== null && skillIds.length) item.附带技能 = skillIds[rank % skillIds.length];
+            return item;
+        });
+    }
+    if (has('equipment')) for (const slot of SLOT_TABLE) {
+        const preferred = normalized.slots.includes(slot.槽位) || (slot.槽位 === '武器' && normalized.slots.includes('法术武器'));
+        const count = slot.槽位 === '武器' ? (preferred ? randomInt(rng, 3, 4) : randomInt(rng, 2, 3)) : slot.子类型 === '防具' ? (preferred ? randomInt(rng, 2, 3) : randomInt(rng, 1, 2)) : (normalized.slots.length ? randomInt(rng, 0, 1) : randomInt(rng, 0, 2));
+        if (count <= 0) continue;
+        for (let rank = 0; rank < count; rank += 1) {
+            const quality = productQuality(rank);
+            const rule = slot.子类型 === '武器' ? levelRule('武器', quality) : levelRule(slot.防具类型, quality);
+            const item = { id: nextId('eq', rng), 名称: '___FILL_INFO___', 类型: '装备', 品质: quality, 价格: productPrice(quality), 子类型: slot.子类型, 槽位: slot.槽位, 描述: '___FILL_INFO___' };
+            if (slot.子类型 === '武器') {
+                const magic = normalized.slots.includes('法术武器') && !normalized.slots.includes('武器') ? true : normalized.slots.includes('法术武器') && normalized.slots.includes('武器') ? rank % 2 === 1 : randomUnit(rng) < .35;
+                item._magic = magic;
+                const profile = (magic ? ARTIFACT_PROFILES : WEAPON_PROFILES).filter(p => QUALITY_ORDER.indexOf(p.min) <= Math.min(QUALITY_ORDER.indexOf(quality) + (randomUnit(rng) < .18 ? 1 : 0), QUALITY_ORDER.indexOf('C')));
+                item.命中 = getStatInRange(rng, rank, count, rule.命中[0], rule.命中[1]);
+                item.伤害 = diceForRank(rng, rank, count, rule.期望伤害[0], rule.期望伤害[1]);
+                const picked = profile[randomInt(rng, 0, Math.max(0, profile.length - 1))] || (magic ? ARTIFACT_PROFILES : WEAPON_PROFILES)[0];
+                item.标签 = unique([profileText(rng, picked.type), profileText(rng, picked.mode), magic ? '法术' : '物理', '攻击', '武器']);
+            } else if (slot.子类型 === '防具') {
+                item.DEF = getStatInRange(rng, rank, count, rule.DEF[0], rule.DEF[1]);
+                item.MDEF = getStatInRange(rng, rank, count, rule.MDEF[0], rule.MDEF[1]);
+                item.标签 = ['轻便', '防具'];
+                if (!['腿甲', '头盔'].includes(slot.槽位)) item.标签 = ['防具'];
+            } else {
+                item.特效 = '___FILL_INFO___';
+                item.标签 = slot.槽位 === '鞋子' ? ['轻便', '脱身', '饰品'] : ['特殊', '饰品'];
+            }
+            generated.装备列表.push(item);
+        }
+    }
+    if (has('item')) {
+        const count = randomInt(rng, 2, 3);
+        generated.道具列表 = Array.from({ length: count }, (_, rank) => {
+            const quality = productQuality(rank);
+            return { id: nextId('it', rng), 名称: '___FILL_INFO___', 类型: '道具', 品质: quality, 价格: productPrice(quality), 数量: 1, 道具类型: '___FILL_INFO___', 效果: '___FILL_INFO___', 标签: rank % 2 === 0 ? ['脱身'] : ['潜行'], 描述: '___FILL_INFO___' };
+        });
+    }
     const converted = emptyCatalog();
     for (const key of Object.values(CATEGORY_KEYS)) converted[key] = generated[key].map(convertShopItem);
     const catalog = normalizeCatalog(currentCatalog); for (const key of Object.values(CATEGORY_KEYS)) if (has(Object.keys(CATEGORY_KEYS).find(k => CATEGORY_KEYS[k] === key))) catalog[key] = converted[key];
-    return { catalog, generated: converted, target: normalized, playerLevel: level, baseQuality: quality, priceRange: range, seed: seed256(seed || `${level}:${JSON.stringify(normalized)}`), rulesetVersion: SHOP_RULESET_VERSION, rngIndex: rng.index };
+    const qualitySet = [...new Set(Object.values(converted).flatMap(items => Array.isArray(items) ? items.map(item => normalizeQualityLetter(item.品质, '')) : []).filter(Boolean))];
+    return { catalog, generated: converted, target: normalized, playerLevel: level, playerLifeLevel: lifeLevelRoman(level), qualitySet, qualityPolicy: 'independent', baseQuality: null, priceRange: null, priceRanges: Object.fromEntries(qualitySet.map(quality => [quality, priceRangeForQuality(quality)])), seed: seed256(resolvedSeed), rulesetVersion: SHOP_RULESET_VERSION, rngIndex: rng.index };
 }
 
 export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
@@ -298,5 +380,5 @@ export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
 export function shopModelPrompt({ draft, target, playerLevel, characterName, query }) {
     const roman = lifeLevelRoman(playerLevel);
     const skillRanges = QUALITY_ORDER.map(quality => `${quality}[技能${CARD_SKILL_ITEM_RANGES[quality].技能伤害[0]}-${CARD_SKILL_ITEM_RANGES[quality].技能伤害[1]}|检定+${CARD_SKILL_ITEM_RANGES[quality].检定修正[0]}-${Number.isFinite(CARD_SKILL_ITEM_RANGES[quality].检定修正[1]) ? CARD_SKILL_ITEM_RANGES[quality].检定修正[1] : '100以上'}|道具HP ${typeof CARD_SKILL_ITEM_RANGES[quality].道具HP === 'string' ? CARD_SKILL_ITEM_RANGES[quality].道具HP : `${CARD_SKILL_ITEM_RANGES[quality].道具HP[0]}-${CARD_SKILL_ITEM_RANGES[quality].道具HP[1]}`}|状态预算${CARD_SKILL_ITEM_RANGES[quality].状态预算}]`).join('、');
-    return `你是《轮回战场》V3.2.6 卡片的 forge_shop 文案填充器。严格按嵌入卡片规则工作。玩家生命层级只读，范围是罗马数字 Ⅰ–Ⅸ（对应阿拉伯数字 1–9），映射为 Ⅰ↔F、Ⅱ↔E、Ⅲ↔D、Ⅳ↔C、Ⅴ↔B、Ⅵ↔A、Ⅶ↔S、Ⅷ↔SS、Ⅸ↔SSS；不得自行改生命层级、品质、价格或任何数值。价格区间必须严格使用 F[10,99]、E[100,999]、D[1000,4999]、C[5000,19999]、B[20000,79999]、A[80000,319999]、S[320000,1270000]、SS[1280000,5110000]、SSS[5120000,+∞]。技能/道具/状态锚点必须遵守：${skillRanges}。${target?.autonomous ? '你必须自主决定刷新目标，先输出刷新目标.categories和刷新目标.slotPreferences；只返回你决定刷新的类别，其余列表为空。' : ''}输出单个 JSON 对象，键必须包含 刷新目标、血统列表、技能列表、装备列表、道具列表、升级列表；也兼容直接返回商品列表。效果必须是字符串值的键值记录（不得嵌套对象或数组）。只允许补全名称、标签、描述、效果、特效、伤害属性和道具类型，不得改动卡片草案中的品质、价格、原始属性、消耗或附带技能引用。当前目标：${JSON.stringify(target)}；生命层级：${roman}（${normalizeLifeLevel(playerLevel)}）；人物：${characterName || '轮回者'}；额外要求：${query || '无'}。\n草案：${JSON.stringify(draft)}`;
+    return `你是《轮回战场》V3.2.6 卡片的 forge_shop 文案填充器。严格按嵌入卡片规则工作。生命层级是只读的生态/承载上限/权限标签，当前标签为${roman}；它与商品品质 F–SSS、五维属性品质、机制品质和价格完全独立，严禁由生命层级推导品质，也不要把生命层级改写成品质字母或数字。草案中的每件商品已经独立锁定品质、价格与数值，必须原样保留。价格区间必须严格使用 F[10,99]、E[100,999]、D[1000,4999]、C[5000,19999]、B[20000,79999]、A[80000,319999]、S[320000,1270000]、SS[1280000,5110000]、SSS[5120000,+∞]。技能/道具/状态锚点必须遵守：${skillRanges}。${target?.autonomous ? '你必须自主决定刷新目标，先输出刷新目标.categories、刷新目标.slotPreferences和刷新目标.qualityPreferences（品质偏好只允许 F/E/D/C/B/A/S/SS/SSS）；只返回你决定刷新的类别，其余列表为空。' : ''}输出单个 JSON 对象，键必须包含 刷新目标、血统列表、技能列表、装备列表、道具列表、升级列表；也兼容直接返回商品列表。效果必须是字符串值的键值记录（不得嵌套对象或数组）。只允许补全名称、标签、描述、效果、特效、伤害属性和道具类型，不得改动卡片草案中的品质、价格、原始属性、消耗或附带技能引用。当前目标：${JSON.stringify(target)}；人物：${characterName || '轮回者'}；额外要求：${query || '无'}。\n草案：${JSON.stringify(draft)}`;
 }
