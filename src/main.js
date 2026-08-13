@@ -11,6 +11,19 @@ import { GameplayBlackBox } from './blackbox.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const LIFE_LEVEL_ROMAN = ['Ⅰ', 'Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ', 'Ⅵ', 'Ⅶ', 'Ⅷ', 'Ⅸ'];
+const ASCII_LIFE_LEVEL_ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX'];
+function normalizeLifeLevel(value) {
+    const text = String(value ?? '').trim().toUpperCase();
+    const romanIndex = LIFE_LEVEL_ROMAN.indexOf(text);
+    if (romanIndex >= 0) return romanIndex + 1;
+    const asciiIndex = ASCII_LIFE_LEVEL_ROMAN.indexOf(text);
+    if (asciiIndex >= 0) return asciiIndex + 1;
+    const numeric = Number(text);
+    return Number.isFinite(numeric) && numeric >= 1 ? Math.min(9, Math.round(numeric)) : 1;
+}
+function lifeLevelRoman(value) { return LIFE_LEVEL_ROMAN[normalizeLifeLevel(value) - 1] || LIFE_LEVEL_ROMAN[0]; }
+function heroLifeLevel(hero = {}) { return normalizeLifeLevel(hero.层级 ?? hero.位阶 ?? hero.等级 ?? 1); }
 const store = new GameStore();
 const blackbox = new GameplayBlackBox();
 let runtime;
@@ -1332,11 +1345,11 @@ function renderPersonalShop() {
     const state = store.activeSession?.personalShop || {};
     const last = state.lastRefresh;
     const hero = runtime.variables.stat_data?.主角 || {};
-    const level = Number(hero.等级 || hero.层级 || hero.位阶 || 1) || 1;
+    const level = heroLifeLevel(hero);
     const activeConnection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
     const elapsed = personalShopRefreshBusy ? `${Math.max(0, (Date.now() - personalShopRefreshStartedAt) / 1000).toFixed(1)} 秒` : '';
     const status = personalShopRefreshBusy ? `${personalShopRefreshStatus || '正在等待模型响应'} · 已用时 ${elapsed} · 再点一次取消` : (last ? `上次完成：${escapeHtml(last.source || 'local')} · ${escapeHtml(formatTime(last.generatedAt || last.at || Date.now()))} · 用时 ${last.elapsedMs ? `${(last.elapsedMs / 1000).toFixed(1)} 秒` : '—'} · seed ${escapeHtml(last.seed || '—')}` : '尚未刷新；目标、槽位和数量由当前大模型自行决定');
-    root.innerHTML = `<section class="personal-shop-wallet"><div><small>PERSONAL WALLET</small><b>¤ ${personalShopBalance().toLocaleString()}</b></div><span>${escapeHtml(hero.姓名 || store.data.settings.userName || '当前人物')} · 独立终端</span></section><section class="personal-shop-refresh"><header><div><small>AI SHOP TERMINAL · forge_shop</small><b>大模型自主决定本次商品目标</b></div><span>${escapeHtml(activeConnection?.model || '未选择 API')}</span></header><div class="shop-refresh-grid shop-refresh-readonly"><div><small>玩家等级 · MVU</small><b>${escapeHtml(level)}</b><em>读取 stat_data.主角</em></div><label class="wide">额外要求（可选）<input id="personalShopQuery" value="${escapeHtml(personalShopExtraRequirement)}" placeholder="例如：偏向火焰、适合近战、避免重复商品"></label></div><button type="button" class="ai-refresh-button ${personalShopRefreshBusy ? 'is-busy' : ''}" data-action="refresh-personal-shop"><span class="ai-refresh-icon">✦</span><span><b>${personalShopRefreshBusy ? '取消本次商城刷新' : '让大模型生成个人商城'}</b><small>${personalShopRefreshBusy ? '再次点击立即取消 · 不写入半成品' : '模型将结合等级、库存和额外要求自主选择目标'}</small></span><i>${personalShopRefreshBusy ? 'CANCEL' : 'GENERATE'}</i></button><small class="shop-refresh-status ${personalShopRefreshBusy ? 'is-running' : ''}">${status}</small></section><section class="personal-shop-layout"><aside><input data-personal-shop-search value="${escapeHtml(personalShopSearch)}" placeholder="搜索兑换项"><div>${[['all','全部分类'],['equipment','装备'],['item','道具'],['skill','技能'],['bloodline','血统'],['upgrade','升级']].map(([key,label]) => `<button data-personal-shop-category="${key}" class="${personalShopCategory === key ? 'active' : ''}">${label}</button>`).join('')}</div></aside><main><div class="personal-rarity-filter">${['all','F','E','D','C','B','A','S','SS','SSS'].map(key => `<button data-personal-shop-rarity="${key}" class="${personalShopRarity === key ? 'active' : ''}">${key === 'all' ? '全部品质' : key}</button>`).join('')}</div><div class="setup-shop-grid">${items.map(item => shopItemCard(item, { personal: true })).join('') || '<div class="empty-state">没有匹配的兑换项</div>'}</div></main></section><section class="selected-panel personal-shop-cart"><header><div><b>当前人物购物车</b><small>选择状态随人物存档持久化</small></div><span>${chosen.length}</span></header><div>${chosen.map(item => `<button data-starter-id="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ¤${item.cost} ×</button>`).join('') || '<p>尚未选择兑换项</p>'}</div></section>`;
+    root.innerHTML = `<section class="personal-shop-wallet"><div><small>PERSONAL WALLET</small><b>¤ ${personalShopBalance().toLocaleString()}</b></div><span>${escapeHtml(hero.姓名 || store.data.settings.userName || '当前人物')} · 独立终端</span></section><section class="personal-shop-refresh"><header><div><small>AI SHOP TERMINAL · forge_shop</small><b>大模型自主决定本次商品目标</b></div><span>${escapeHtml(activeConnection?.model || '未选择 API')}</span></header><div class="shop-refresh-grid shop-refresh-readonly"><div><small>生命层级 · MVU</small><b>${escapeHtml(`${lifeLevelRoman(level)}（${level}）`)}</b><em>读取 stat_data.主角.层级 · I–IX</em></div><label class="wide">额外要求（可选）<input id="personalShopQuery" value="${escapeHtml(personalShopExtraRequirement)}" placeholder="例如：偏向火焰、适合近战、避免重复商品"></label></div><button type="button" class="ai-refresh-button ${personalShopRefreshBusy ? 'is-busy' : ''}" data-action="refresh-personal-shop"><span class="ai-refresh-icon">✦</span><span><b>${personalShopRefreshBusy ? '取消本次商城刷新' : '让大模型生成个人商城'}</b><small>${personalShopRefreshBusy ? '再次点击立即取消 · 不写入半成品' : '模型将结合生命层级、库存和额外要求自主选择目标'}</small></span><i>${personalShopRefreshBusy ? 'CANCEL' : 'GENERATE'}</i></button><small class="shop-refresh-status ${personalShopRefreshBusy ? 'is-running' : ''}">${status}</small></section><section class="personal-shop-layout"><aside><input data-personal-shop-search value="${escapeHtml(personalShopSearch)}" placeholder="搜索兑换项"><div>${[['all','全部分类'],['equipment','装备'],['item','道具'],['skill','技能'],['bloodline','血统'],['upgrade','升级']].map(([key,label]) => `<button data-personal-shop-category="${key}" class="${personalShopCategory === key ? 'active' : ''}">${label}</button>`).join('')}</div></aside><main><div class="personal-rarity-filter">${['all','F','E','D','C','B','A','S','SS','SSS'].map(key => `<button data-personal-shop-rarity="${key}" class="${personalShopRarity === key ? 'active' : ''}">${key === 'all' ? '全部品质' : key}</button>`).join('')}</div><div class="setup-shop-grid">${items.map(item => shopItemCard(item, { personal: true })).join('') || '<div class="empty-state">没有匹配的兑换项</div>'}</div></main></section><section class="selected-panel personal-shop-cart"><header><div><b>当前人物购物车</b><small>选择状态随人物存档持久化</small></div><span>${chosen.length}</span></header><div>${chosen.map(item => `<button data-starter-id="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ¤${item.cost} ×</button>`).join('') || '<p>尚未选择兑换项</p>'}</div></section>`;
 }
 
 async function refreshPersonalShop() {
@@ -1358,10 +1371,10 @@ async function refreshPersonalShop() {
     personalShopRefreshTimer = setInterval(() => { if (personalShopRefreshBusy) renderPersonalShop(); }, 500);
     renderPersonalShop();
     const hero = runtime.variables.stat_data?.主角 || {};
-    const playerLevel = Math.min(50, Math.max(1, Number(hero.等级 || hero.层级 || hero.位阶 || 1) || 1));
+    const playerLevel = heroLifeLevel(hero);
     const connection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
     const preset = runtime.activePreset ? { name: runtime.activePreset.name, prompts: (runtime.activePreset.prompts || []).filter(item => item.enabled !== false).map(item => ({ role: item.role, content: runtime.renderTemplate(item.content) })) } : null;
-    const payload = { characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel, target: { autonomous: true, categories: ['all'], query }, seed: crypto.randomUUID(), hero, currentCatalog: session.personalShop?.catalog || {}, connection, preset };
+    const payload = { characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel, playerLifeLevel: lifeLevelRoman(playerLevel), target: { autonomous: true, categories: ['all'], query }, seed: crypto.randomUUID(), hero, currentCatalog: session.personalShop?.catalog || {}, connection, preset };
     const connectionMeta = { id: connection.id, name: connection.name, model: connection.model, protocol: connection.protocol };
     await blackbox.record('shop', 'shop_refresh_started', { target: 'model-decided', extraRequirement: query, playerLevel, connection: connectionMeta }, { sessionId: session.id });
     try {
@@ -1399,9 +1412,9 @@ async function forgePersonalShop(args = {}) {
     if (!session) throw new Error('当前没有活动存档');
     const hero = runtime.variables.stat_data?.主角 || {};
     const connection = store.data.connections.find(item => item.id === store.data.settings.activeConnectionId) || store.data.settings;
-    const playerLevel = Math.min(50, Math.max(1, Number(hero.等级 || hero.层级 || hero.位阶 || 1) || 1));
+    const playerLevel = heroLifeLevel(hero);
     const payload = {
-        characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel,
+        characterName: hero.姓名 || store.data.settings.userName || '轮回者', playerLevel, playerLifeLevel: lifeLevelRoman(playerLevel),
         target: { autonomous: true, categories: ['all'], query: String(args.要求 ?? args.query ?? '').slice(0, 500) },
         seed: args.seed || crypto.randomUUID(), hero, currentCatalog: session.personalShop?.catalog || {}, connection,
         preset: runtime.activePreset ? { name: runtime.activePreset.name, prompts: (runtime.activePreset.prompts || []).filter(item => item.enabled !== false).map(item => ({ role: item.role, content: runtime.renderTemplate(item.content) })) } : null,

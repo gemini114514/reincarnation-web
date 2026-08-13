@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { readCharacterCard } from './lib/card.js';
 import vm from 'node:vm';
 import { createCombatRouter } from './combat/router.js';
-import { generateShopDraft, mergeApiCatalog, normalizeTarget, shopModelPrompt } from './shop/engine.js';
+import { generateShopDraft, lifeLevelRoman, mergeApiCatalog, normalizeLifeLevel, normalizeTarget, shopModelPrompt } from './shop/engine.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const cardPath = path.join(root, 'card', 'V3.2.6.png');
@@ -202,7 +202,7 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
     const shopTimeout = setTimeout(() => shopController.abort(new Error('商城模型请求超过 300 秒')), 300000);
     res.on('close', () => { if (!res.writableEnded) shopController.abort(new Error('客户端取消商城刷新')); });
     try {
-        const playerLevel = Number(body.playerLevel || body.level || toolArgs.玩家等级 || 1);
+        const playerLevel = normalizeLifeLevel(body.playerLifeLevel || body.playerLevel || body.level || toolArgs.生命层级 || toolArgs.玩家等级 || body.hero?.层级 || body.hero?.位阶 || body.hero?.等级 || 1);
         const target = body.target && typeof body.target === 'object' ? body.target : {};
         const slotPreferences = Array.isArray(body.slotPreferences) && body.slotPreferences.length ? body.slotPreferences : (Array.isArray(toolArgs.槽位偏好) ? toolArgs.槽位偏好 : (Array.isArray(target.slotPreferences) && target.slotPreferences.length ? target.slotPreferences : (Array.isArray(target.slots) ? target.slots : [])));
         const autonomousTarget = Boolean(target.autonomous || target.modelDecides || target.categories?.includes('all'));
@@ -274,6 +274,7 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
             seed: draft.seed,
             target: draft.target,
             playerLevel: draft.playerLevel,
+            playerLifeLevel: lifeLevelRoman(draft.playerLevel),
             // Card forge_shop returns a localized flat 商品列表. Keep that
             // compatibility view alongside the app's categorized catalogue.
             商品列表: shopItems,
