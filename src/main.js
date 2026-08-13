@@ -6,7 +6,7 @@ import * as Vue from 'vue';
 import * as Zod from 'zod';
 import { GameStore, getAffection } from './store.js';
 import { CardRuntime } from './runtime.js';
-import { library, normalizePreset, normalizeScript, normalizeRegexPreset } from './library.js';
+import { library, normalizePreset, normalizeScript, normalizeRegexPreset, normalizeUserProfile } from './library.js';
 import { GameplayBlackBox } from './blackbox.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -35,6 +35,7 @@ let activeMessageId = null;
 let presets = [];
 let scripts = [];
 let profiles = [];
+let userProfiles = [];
 let regexPresets = [];
 let openingData = null;
 let selectedStarterIds = new Set();
@@ -45,6 +46,7 @@ let selectedScriptId = null;
 let selectedRegexPresetId = 'card';
 let selectedPromptEntryId = null;
 let selectedRegexEntryId = null;
+let selectedUserProfileId = null;
 const scriptFrames = new Map();
 let connectionModelCandidates = [];
 let textEditorOriginal = '';
@@ -755,6 +757,91 @@ function renderConnectionManager() {
     $('#activeCallSummary').innerHTML = current ? [['当前配置', current.name], ['协议', protocolLabel(current.protocol)], ['模型', current.model], ['地址', current.baseUrl]].map(([key, value]) => `<div class="active-call-row"><span>${key}</span><b>${escapeHtml(value)}</b></div>`).join('') : '<div class="empty-state">尚未选择模型连接</div>';
 }
 
+function editUserProfile(profile = null) {
+    const form = $('#userProfileForm');
+    if (!form) return;
+    const value = profile || { id: '', name: '', displayName: store.data.settings.userName || '', persona: store.data.settings.persona || '', description: '', tags: [] };
+    form.reset();
+    for (const [key, item] of Object.entries(value)) if (form.elements[key]) form.elements[key].value = Array.isArray(item) ? item.join(', ') : item ?? '';
+    $('#userProfileEditorTitle').textContent = profile ? profile.name : '新建用户设定';
+    const active = profile?.id === store.data.settings.activeUserProfileId;
+    $('#userProfileEditorState').textContent = active ? '当前生效' : '未启用';
+    $('#userProfileEditorState').classList.toggle('active', active);
+    $('#userProfileUpdatedAt').textContent = profile?.updatedAt ? `更新于 ${new Date(profile.updatedAt).toLocaleString()}` : '尚未保存';
+    $('#userProfileActivate').disabled = !profile || profile.id === store.data.settings.activeUserProfileId;
+    $('#userProfileDelete').disabled = !profile;
+}
+
+function renderUserProfileManager() {
+    const list = $('#userProfileList');
+    if (!list) return;
+    const activeId = store.data.settings.activeUserProfileId;
+    const sorted = [...userProfiles].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+    list.innerHTML = sorted.map(profile => `<div class="manager-item ${profile.id === selectedUserProfileId ? 'active' : ''}" data-user-profile-id="${escapeHtml(profile.id)}"><b>${profile.id === activeId ? '<i class="active-dot"></i>' : ''}${escapeHtml(profile.name)}</b><small>${escapeHtml(profile.displayName || '未设置显示名称')} · ${escapeHtml(profile.persona || '空白设定').slice(0, 48)}</small></div>`).join('') || '<div class="empty-state">还没有用户设定，点击“新建”创建 A / B / C / D 档案。</div>';
+    const selected = userProfiles.find(item => item.id === selectedUserProfileId) || null;
+    editUserProfile(selected);
+}
+
+async function saveUserProfile() {
+    const form = $('#userProfileForm');
+    if (!form?.reportValidity()) return;
+    const values = Object.fromEntries(new FormData(form));
+    const existing = userProfiles.find(item => item.id === values.id);
+    const profile = normalizeUserProfile({
+        ...values,
+        id: values.id || undefined,
+        tags: String(values.tags || '').split(/[,，]/).map(item => item.trim()).filter(Boolean),
+        createdAt: existing?.createdAt,
+    }, '用户设定');
+    await library.put('userProfiles', profile);
+    userProfiles = userProfiles.filter(item => item.id !== profile.id).concat(profile);
+    selectedUserProfileId = profile.id;
+    if (profile.id === store.data.settings.activeUserProfileId) {
+        store.updateSettings({ userName: profile.displayName || profile.name || '轮回者', persona: profile.persona || '' });
+        renderAll();
+    }
+    renderUserProfileManager();
+    toast(`用户设定“${profile.name}”已保存`, 'success');
+}
+
+async function activateUserProfile(profile = userProfiles.find(item => item.id === selectedUserProfileId)) {
+    if (!profile) return toast('请先选择一个用户设定', 'error');
+    store.updateSettings({ activeUserProfileId: profile.id, userName: profile.displayName || profile.name || '轮回者', persona: profile.persona || '' });
+    selectedUserProfileId = profile.id;
+    renderUserProfileManager();
+    renderAll();
+    await blackbox.record('user_profile', 'user_profile_activated', { profileId: profile.id, name: profile.name }, { sessionId: store.activeSession?.id });
+    toast(`已启用用户设定：${profile.name}`, 'success');
+}
+
+function exportUserProfile(profile = userProfiles.find(item => item.id === selectedUserProfileId)) {
+    if (!profile) return toast('请先选择一个用户设定', 'error');
+    const blob = new Blob([JSON.stringify({ format: 'reincarnation-user-profile', version: 1, exportedAt: new Date().toISOString(), profile }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `${profile.name || '用户设定'}.json`; link.click(); URL.revokeObjectURL(url);
+}
+
+function exportUserProfiles() {
+    if (!userProfiles.length) return toast('暂无可导出的用户设定', 'error');
+    const blob = new Blob([JSON.stringify({ format: 'reincarnation-user-profiles', version: 1, exportedAt: new Date().toISOString(), activeId: store.data.settings.activeUserProfileId, profiles: userProfiles }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = '轮回战场-用户设定档案.json'; link.click(); URL.revokeObjectURL(url);
+}
+
+async function importUserProfiles(file) {
+    const raw = JSON.parse(await file.text());
+    const source = Array.isArray(raw) ? raw : Array.isArray(raw.profiles) ? raw.profiles : raw.profile ? [raw.profile] : [raw];
+    const imported = source.filter(item => item && typeof item === 'object').map((item, index) => normalizeUserProfile({ ...item, id: undefined, name: item.name || `用户设定 ${index + 1}` }, `用户设定 ${index + 1}`));
+    if (!imported.length) throw new Error('文件中没有可识别的用户设定');
+    for (const profile of imported) {
+        const existing = userProfiles.find(item => item.name === profile.name);
+        if (existing) { profile.id = existing.id; profile.createdAt = existing.createdAt; }
+        await library.put('userProfiles', profile);
+    }
+    userProfiles = userProfiles.filter(item => !imported.some(profile => profile.id === item.id)).concat(imported);
+    selectedUserProfileId = imported[0].id;
+    renderUserProfileManager();
+    toast(`已导入 ${imported.length} 个用户设定`, 'success');
+}
+
 function editConnection(connection = null) {
     const form = $('#connectionForm');
     form.reset();
@@ -1018,14 +1105,28 @@ function installPresetBridge() {
 }
 
 async function loadLibraries() {
-    [presets, scripts, profiles, regexPresets] = await Promise.all([library.list('presets'), library.list('scripts'), library.list('profiles'), library.list('regexPresets')]);
+    [presets, scripts, profiles, userProfiles, regexPresets] = await Promise.all([library.list('presets'), library.list('scripts'), library.list('profiles'), library.list('userProfiles'), library.list('regexPresets')]);
+    if (!userProfiles.length) {
+        const legacy = normalizeUserProfile({ name: '默认用户', displayName: store.data.settings.userName || '轮回者', persona: store.data.settings.persona || '', description: '由旧版常规设置迁移而来' }, '默认用户');
+        await library.put('userProfiles', legacy);
+        userProfiles = [legacy];
+    }
+    let activeUserProfile = userProfiles.find(item => item.id === store.data.settings.activeUserProfileId);
+    if (!activeUserProfile) {
+        activeUserProfile = userProfiles[0];
+        store.updateSettings({ activeUserProfileId: activeUserProfile.id, userName: activeUserProfile.displayName || activeUserProfile.name || '轮回者', persona: activeUserProfile.persona || '' });
+    } else {
+        // The active profile is the source of truth for the prompt persona.
+        store.updateSettings({ userName: activeUserProfile.displayName || activeUserProfile.name || '轮回者', persona: activeUserProfile.persona || '' });
+    }
+    selectedUserProfileId = activeUserProfile.id;
     selectedPresetId = store.data.settings.activePresetId || presets[0]?.id || null;
     selectedScriptId = scripts[0]?.id || null;
     const active = presets.find(item => item.id === store.data.settings.activePresetId) || null;
     runtime.setPreset(active);
     runtime.setRegexPresets(regexPresets);
     installPresetBridge();
-    renderPresetManager(); renderScriptManager(); renderRegexManager(); renderConnectionManager();
+    renderPresetManager(); renderScriptManager(); renderRegexManager(); renderConnectionManager(); renderUserProfileManager();
     for (const script of scripts.filter(item => item.enabled)) executeAssistantScript(script).catch(error => toast(`${script.name} 启动失败：${error.message}`, 'error'));
 }
 
@@ -1217,7 +1318,7 @@ function renderAll() {
 function showPanel(panel) {
     $$('.view').forEach(item => item.classList.toggle('active', item.id === `view-${panel}`));
     $$('.nav-item[data-panel]').forEach(item => item.classList.toggle('active', item.dataset.panel === panel));
-    const labels = { hub: '世界总览', chat: '剧情楼层', combat: '战术演算', status: '主角档案', shop: '个人商店终端', inventory: '装备与道具', abilities: '技能与血统', missions: '任务', world: '世界档案', relations: '实体关系', intel: '情报与传闻', archive: '存档管理', settings: '系统设置' };
+    const labels = { hub: '世界总览', chat: '剧情楼层', combat: '战术演算', status: '主角档案', shop: '个人商店终端', inventory: '装备与道具', abilities: '技能与血统', missions: '任务', world: '世界档案', relations: '实体关系', intel: '情报与传闻', archive: '存档管理', 'user-settings': '用户设定', settings: '系统设置' };
     $('#routeLabel').textContent = labels[panel] ?? panel;
     $('#rail').classList.remove('open');
     if (panel === 'combat') loadCombat({ quiet: true });
@@ -1534,7 +1635,6 @@ async function submitSetup(event) {
         if (!values.partnerName?.trim()) return toast('启用队友后必须填写队友姓名', 'error');
         stat['关系列表'][values.partnerName.trim()] = { 在场: true, 种族: values.partnerRace || '人类', 身份: [values.faction, values.partnerGender], 职业: {}, 层级: values.partnerTier, HP: 20, HP_MAX: 20, THP: 0, EP: 0, EP_MAX: 0, 状态: {}, 最终属性: {}, 血统: {}, 装备: {}, 技能: {}, 道具: {}, 形态库: {}, 当前形态: { 激活: false, 名称: '' }, 性格: '', 喜爱: values.partnerLikes || '', 外貌: values.partnerAppearance || '', 着装: '', 是否队友: true, 好感度: 0, 好感度关系: {}, 心里话: '', 背景故事: values.partnerBackground || '' };
     }
-    store.updateSettings({ userName: values.name, persona: [`姓名：${values.name}`, `年龄：${values.age}`, `性别：${values.gender}`, `种族：${values.race}`, `阵营：${values.faction}`].join('\n') });
     await runtime.replaceVariables(variables);
     const committed = runtime.variables.stat_data;
     if (!committed?.主角?.血统?.[bloodlineName] || committed.主角.空间币 !== setupBalance()) throw new Error('MVU 建档提交校验失败，变量未正确落盘');
@@ -1583,6 +1683,12 @@ function bindEvents() {
             store.selectConnection(connectionItem.dataset.connectionId);
             editConnection(store.data.connections.find(item => item.id === connectionItem.dataset.connectionId));
             renderConnectionManager();
+            return;
+        }
+        const userProfileItem = event.target.closest('[data-user-profile-id]');
+        if (userProfileItem) {
+            selectedUserProfileId = userProfileItem.dataset.userProfileId;
+            renderUserProfileManager();
             return;
         }
         const presetItem = event.target.closest('[data-preset-id]');
@@ -1792,6 +1898,31 @@ function bindEvents() {
             applyUiScale();
             toast('常规设置已保存', 'success');
         }
+        if (action === 'new-user-profile') {
+            selectedUserProfileId = null;
+            renderUserProfileManager();
+            $('#userProfileForm')?.elements.name?.focus();
+        }
+        if (action === 'activate-user-profile') await activateUserProfile();
+        if (action === 'save-user-profile') await saveUserProfile();
+        if (action === 'delete-user-profile') {
+            const profile = userProfiles.find(item => item.id === selectedUserProfileId);
+            if (profile && confirm(`删除用户设定“${profile.name}”？`)) {
+                await library.delete('userProfiles', profile.id);
+                userProfiles = userProfiles.filter(item => item.id !== profile.id);
+                if (store.data.settings.activeUserProfileId === profile.id) {
+                    const fallback = userProfiles[0] || null;
+                    if (fallback) await activateUserProfile(fallback);
+                    else store.updateSettings({ activeUserProfileId: null, userName: '轮回者', persona: '' });
+                }
+                selectedUserProfileId = userProfiles[0]?.id || null;
+                renderUserProfileManager();
+                toast(`用户设定“${profile.name}”已删除`, 'success');
+            }
+        }
+        if (action === 'import-user-profile') $('#userProfileFile').click();
+        if (action === 'export-user-profile') exportUserProfile();
+        if (action === 'export-user-profiles') exportUserProfiles();
         if (action === 'new-connection') editConnection();
         if (action === 'delete-connection') {
             const id = $('#connectionForm').elements.id.value;
@@ -2084,6 +2215,7 @@ function bindEvents() {
         if (action === 'save') await saveTextEditor();
     });
     $('#setupForm').addEventListener('submit', submitSetup);
+    $('#userProfileForm').addEventListener('submit', event => { event.preventDefault(); saveUserProfile(); });
     $('#setupShopSearch').addEventListener('input', renderSetupShop);
     $('#personalShopContent').addEventListener('input', event => { if (event.target.matches('[data-personal-shop-search]')) { personalShopSearch = event.target.value.trim().toLowerCase(); renderPersonalShop(); requestAnimationFrame(() => { const input = $('[data-personal-shop-search]'); input?.focus(); input?.setSelectionRange(input.value.length, input.value.length); }); } });
     $('#setupForm').elements.partnerEnabled.addEventListener('change', () => { renderPartnerState(); renderSetupShop(); });
@@ -2097,6 +2229,11 @@ function bindEvents() {
             const profile = { ...source, id: crypto.randomUUID(), name: source.name || file.name.replace(/\.json$/i, ''), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
             await library.put('profiles', profile); profiles.push(profile); renderProfiles(); toast(`已导入人物档案：${profile.name}`, 'success');
         } catch (error) { toast(`人物档案导入失败：${error.message}`, 'error'); }
+    });
+    $('#userProfileFile').addEventListener('change', async event => {
+        const file = event.target.files[0]; event.target.value = ''; if (!file) return;
+        try { await importUserProfiles(file); }
+        catch (error) { toast(`用户设定导入失败：${error.message}`, 'error'); }
     });
     $('#connectionForm').elements.temperature.addEventListener('input', event => { $('#temperatureValue').textContent = event.target.value; });
     $('#connectionForm').elements.model.addEventListener('input', event => renderConnectionModelOptions(event.target.value));
@@ -2249,7 +2386,7 @@ async function boot() {
         $('#runtimeBadge').classList.toggle('ready', result.failed.length === 0);
         $('#runtimeBadge').innerHTML = `<i></i> ${result.failed.length ? `${total - result.failed.length}/${total} 脚本就绪` : '玩法运行时就绪'}`;
         if (result.failed.length) toast('部分远程卡片模块未加载，请检查网络；核心内置兼容层仍可运行。', 'error');
-        window.__reincarnationApp = { store, runtime, blackbox, generate, newSession, refreshPersonalShop, forgeShop: forgePersonalShop, forge_shop: forgePersonalShop, presets: () => presets, scripts: () => scripts, renderAll, renderPersonalShop, renderBlackBox, getAffection: (source, target) => getAffection(runtime.variables.stat_data, source, target) };
+        window.__reincarnationApp = { store, runtime, blackbox, generate, newSession, refreshPersonalShop, forgeShop: forgePersonalShop, forge_shop: forgePersonalShop, presets: () => presets, scripts: () => scripts, userProfiles: () => userProfiles, activateUserProfile, renderAll, renderPersonalShop, renderBlackBox, getAffection: (source, target) => getAffection(runtime.variables.stat_data, source, target) };
         await blackbox.record('lifecycle', 'boot_completed', { activeSessionId: store.activeSession?.id, activePresetId: store.data.settings.activePresetId, activeConnectionId: store.data.settings.activeConnectionId }, { sessionId: store.activeSession?.id });
         await renderBlackBox();
     } catch (error) {

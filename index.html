@@ -39,6 +39,7 @@
       </nav>
 
       <div class="sidebar-foot">
+        <button class="nav-item" data-panel="user-settings"><span>☻</span><em>用户设定</em></button>
         <button class="nav-item" data-panel="archive"><span>▤</span><em>存档管理</em></button>
         <button class="nav-item" data-panel="settings"><span>⚙</span><em>系统设置</em></button>
       </div>
@@ -216,8 +217,21 @@
         </section>
 
         <section class="settings-panel general-settings" data-settings-panel="general">
-          <form class="settings-layout" id="settingsForm"><div class="settings-group"><h3>玩家身份</h3><label><span>显示名称</span><input name="userName" /></label><label><span>补充设定</span><textarea name="persona" rows="8"></textarea></label><button type="button" data-action="save-settings" class="accent-button">保存常规设置</button></div><div class="settings-group"><h3>显示与大屏适配</h3><label><span>界面字号 / 缩放</span><select name="uiScale"><option value="0.85">紧凑 · 85%</option><option value="1">标准 · 100%</option><option value="1.15">大字 · 115%</option><option value="1.3">大屏 · 130%</option><option value="1.5">展台 · 150%</option></select></label><p class="settings-help">调整整个终端的字号、按钮和面板比例；刷新页面后仍会保留。</p></div><div class="settings-group"><h3>当前调用参数</h3><div id="activeCallSummary"></div></div><div class="settings-group runtime-group"><h3>规则运行时</h3><div id="integrityDetails"></div></div></form>
+          <form class="settings-layout" id="settingsForm"><div class="settings-group"><h3>显示与大屏适配</h3><label><span>界面字号 / 缩放</span><select name="uiScale"><option value="0.85">紧凑 · 85%</option><option value="1">标准 · 100%</option><option value="1.15">大字 · 115%</option><option value="1.3">大屏 · 130%</option><option value="1.5">展台 · 150%</option></select></label><p class="settings-help">调整整个终端的字号、按钮和面板比例；刷新页面后仍会保留。</p><button type="button" data-action="save-settings" class="accent-button">保存常规设置</button></div><div class="settings-group"><h3>当前调用参数</h3><div id="activeCallSummary"></div></div><div class="settings-group runtime-group"><h3>规则运行时</h3><div id="integrityDetails"></div></div></form>
         </section>
+      </section>
+
+      <section class="view data-view user-settings-view" id="view-user-settings">
+        <header class="page-heading"><div><small>USER PROFILES</small><h1>用户设定</h1><p>保存多个用户 A / B / C / D 设定档案，当前启用档案会作为对话中的用户身份与补充设定。</p></div></header>
+        <div class="user-profile-layout">
+          <div class="manager-sidebar user-profile-sidebar"><header><h3>用户设定档案</h3><button type="button" data-action="new-user-profile">＋ 新建</button></header><div id="userProfileList" class="manager-list"></div><div class="user-profile-sidebar-foot"><button type="button" data-action="import-user-profile">导入</button><button type="button" data-action="export-user-profile">导出当前</button><button type="button" data-action="export-user-profiles">导出全部</button><input id="userProfileFile" type="file" accept="application/json,.json" hidden /></div></div>
+          <form class="manager-editor user-profile-editor" id="userProfileForm">
+            <input type="hidden" name="id" />
+            <div class="editor-heading"><div><small>USER PROFILE</small><h2 id="userProfileEditorTitle">新建用户设定</h2><span id="userProfileEditorState" class="user-profile-state">未启用</span></div><div><button type="button" data-action="delete-user-profile" id="userProfileDelete" class="danger">删除</button><button type="button" data-action="activate-user-profile" id="userProfileActivate" class="accent-button">设为当前</button><button type="submit" class="accent-button">保存设定</button></div></div>
+            <div class="form-grid"><label><span>设定档案名称</span><input name="name" required placeholder="例如：用户A / 写手模式 / 现实身份" /></label><label><span>对话显示名称</span><input name="displayName" placeholder="模型称呼你的名字" /></label><label class="wide"><span>标签（逗号分隔）</span><input name="tags" placeholder="主账号，严肃，中文" /></label><label class="wide"><span>备注</span><input name="description" placeholder="仅用于管理，不会自动发送给模型" /></label><label class="wide"><span>用户补充设定</span><textarea name="persona" rows="18" spellcheck="false" placeholder="例如：姓名、身份、写作偏好、禁忌、长期目标……"></textarea></label></div>
+            <footer class="user-profile-editor-foot"><span>保存到本机 IndexedDB；切换档案不会修改角色卡或当前 MVU 人物档案。</span><span id="userProfileUpdatedAt">—</span></footer>
+          </form>
+        </div>
       </section>
     </main>
 

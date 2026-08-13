@@ -1,6 +1,6 @@
 const DB_NAME = 'reincarnation-library';
-const DB_VERSION = 2;
-const STORES = ['presets', 'scripts', 'profiles', 'regexPresets'];
+const DB_VERSION = 3;
+const STORES = ['presets', 'scripts', 'profiles', 'userProfiles', 'regexPresets'];
 
 function openDb() {
     return new Promise((resolve, reject) => {
@@ -77,6 +77,20 @@ export function normalizeScript(raw, filename = '未命名脚本') {
     if (raw?.type !== 'script' || typeof raw.content !== 'string') throw new Error('不是可识别的酒馆助手脚本');
     const { content, ...metadata } = raw;
     return { id: raw.id || crypto.randomUUID(), name: raw.name || filename.replace(/\.(?:json|m?js)$/i, ''), enabled: raw.enabled !== false, importedAt: new Date().toISOString(), content, data: raw.data || {}, button: raw.button || {}, raw: metadata };
+}
+
+export function normalizeUserProfile(raw = {}, fallbackName = '用户设定') {
+    const name = String(raw.name || fallbackName).trim() || fallbackName;
+    return {
+        id: raw.id || crypto.randomUUID(),
+        name,
+        displayName: String(raw.displayName ?? raw.userName ?? '').trim(),
+        persona: String(raw.persona ?? raw.content ?? '').trim(),
+        description: String(raw.description ?? raw.note ?? '').trim(),
+        tags: Array.isArray(raw.tags) ? raw.tags.map(item => String(item).trim()).filter(Boolean).slice(0, 20) : [],
+        createdAt: raw.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+    };
 }
 
 export function normalizeRegexPreset(raw, filename = '未命名正则预设') {

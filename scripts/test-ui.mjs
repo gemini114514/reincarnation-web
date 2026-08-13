@@ -49,7 +49,20 @@ try {
     await page.getByText('世界档案', { exact: true }).last().waitFor();
     await page.getByRole('button', { name: /实体关系/ }).click();
     await page.getByText('互相好感度', { exact: true }).waitFor();
-    for (const panel of ['hub', 'chat', 'missions', 'status', 'inventory', 'abilities', 'world', 'relations', 'intel', 'archive', 'settings']) {
+    await page.getByRole('button', { name: /用户设定/ }).click();
+    await page.locator('#view-user-settings').waitFor({ state: 'visible' });
+    await page.locator('[data-action="new-user-profile"]').click();
+    await page.locator('#userProfileForm [name="name"]').fill('用户B');
+    await page.locator('#userProfileForm [name="displayName"]').fill('测试用户B');
+    await page.locator('#userProfileForm [name="persona"]').fill('这是用户B的长期设定。');
+    await page.locator('#userProfileForm').getByRole('button', { name: '保存设定' }).click();
+    await page.locator('[data-action="activate-user-profile"]').click();
+    await page.locator('[data-action="new-user-profile"]').click();
+    await page.locator('#userProfileForm [name="name"]').fill('临时用户C');
+    await page.locator('#userProfileForm').getByRole('button', { name: '保存设定' }).click();
+    page.once('dialog', dialog => dialog.accept());
+    await page.locator('[data-action="delete-user-profile"]').click();
+    for (const panel of ['hub', 'chat', 'missions', 'status', 'inventory', 'abilities', 'world', 'relations', 'intel', 'archive', 'user-settings', 'settings']) {
         await page.locator(`[data-panel="${panel}"]`).first().click();
         await page.locator(`#view-${panel}`).waitFor({ state: 'visible' });
     }
@@ -65,6 +78,9 @@ try {
         const session = data.sessions.find(item => item.id === data.activeSessionId);
         return {
             player: data.settings.userName,
+            activeUserProfileId: data.settings.activeUserProfileId,
+            userProfileCount: window.__reincarnationApp.userProfiles().length,
+            userProfile: window.__reincarnationApp.userProfiles().find(item => item.id === data.settings.activeUserProfileId),
             strength: session.variables.stat_data['主角']['最终属性']['力量'],
             world: session.variables.stat_data['世界']['名称'],
             hasIframe: Boolean(document.querySelector('iframe')),
@@ -78,7 +94,7 @@ try {
         };
     });
     console.log({ ...result, pageErrors: errors });
-    if (result.player !== '测试轮回者' || result.strength < 1 || result.world !== '主神空间' || result.hasIframe || result.views < 10 || !result.promptReady || !result.floors.includes('/ 2 楼') || result.navCategories !== 2 || result.affectionNpcToPlayer !== 12 || result.affectionNpcToNpc !== -3 || result.affectionMissing !== 0 || errors.length) process.exitCode = 1;
+    if (result.player !== '测试用户B' || result.userProfileCount < 2 || !result.activeUserProfileId || result.userProfile?.persona !== '这是用户B的长期设定。' || result.strength < 1 || result.world !== '主神空间' || result.hasIframe || result.views < 11 || !result.promptReady || !result.floors.includes('/ 2 楼') || result.navCategories !== 2 || result.affectionNpcToPlayer !== 12 || result.affectionNpcToNpc !== -3 || result.affectionMissing !== 0 || errors.length) process.exitCode = 1;
 } finally {
     await browser.close();
 }

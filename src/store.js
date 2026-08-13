@@ -10,6 +10,7 @@ const defaults = {
         maxTokens: 32768,
         userName: '轮回者',
         persona: '',
+        activeUserProfileId: null,
         activeConnectionId: null,
         activePresetId: null,
         uiScale: 1,
