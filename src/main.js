@@ -20,7 +20,8 @@ function normalizeLifeLevel(value) {
     const asciiIndex = ASCII_LIFE_LEVEL_ROMAN.indexOf(text);
     if (asciiIndex >= 0) return asciiIndex + 1;
     const numeric = Number(text);
-    return Number.isFinite(numeric) && numeric >= 1 ? Math.min(9, Math.round(numeric)) : 1;
+    // The card has exactly nine life levels; legacy 1–50 values are invalid.
+    return Number.isInteger(numeric) && numeric >= 1 && numeric <= 9 ? numeric : 1;
 }
 function lifeLevelRoman(value) { return LIFE_LEVEL_ROMAN[normalizeLifeLevel(value) - 1] || LIFE_LEVEL_ROMAN[0]; }
 function heroLifeLevel(hero = {}) { return normalizeLifeLevel(hero.层级 ?? hero.位阶 ?? hero.等级 ?? 1); }
