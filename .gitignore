@@ -2,6 +2,7 @@ node_modules/
 dist/
 .test/
 *.log
+update.log
 data/*.sqlite*
 
 # Local-only artifacts (never commit / push)
