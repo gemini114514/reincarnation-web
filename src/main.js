@@ -165,6 +165,56 @@ let combatActionNotice = null;
 let combatActionNoticeTimer = null;
 let combatSimulatorPickerOpen = false;
 let combatFlowPhase = null;
+const APP_REPO = 'gemini114514/reincarnation-web';
+let appInfo = { version: '0.1.0', latest: null, checkedAt: null, checking: false, available: false, dismissed: false };
+function compareVersions(a, b) {
+    const pa = String(a).split('.').map(n => parseInt(n, 10) || 0);
+    const pb = String(b).split('.').map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+        const x = pa[i] || 0, y = pb[i] || 0;
+        if (x > y) return 1;
+        if (x < y) return -1;
+    }
+    return 0;
+}
+async function checkForUpdate() {
+    if (appInfo.checking) return appInfo;
+    appInfo.checking = true;
+    renderUpdateBanner();
+    try {
+        const [localRes, latestRes] = await Promise.all([
+            fetch('/api/version').then(r => r.ok ? r.json() : null),
+            fetch(`https://api.github.com/repos/${APP_REPO}/releases/latest`).then(r => r.ok ? r.json() : null),
+        ]);
+        const local = String(localRes?.version || appInfo.version);
+        appInfo.version = local;
+        const latestTag = String(latestRes?.tag_name || '').trim();
+        const latestVersion = latestTag.replace(/^v/i, '');
+        appInfo.latest = { tag: latestTag, version: latestVersion, name: latestRes?.name || '', body: latestRes?.body || '', url: latestRes?.html_url || '', publishedAt: latestRes?.published_at || '' };
+        appInfo.available = Boolean(latestVersion && compareVersions(latestVersion, local) > 0);
+        appInfo.checkedAt = Date.now();
+    } catch { /* offline / unreachable: keep defaults */ }
+    appInfo.checking = false;
+    renderVersionBadge();
+    renderUpdateBanner();
+    return appInfo;
+}
+function renderVersionBadge() {
+    const badge = $('#versionBadge');
+    if (!badge) return;
+    badge.textContent = `v${appInfo.version}`;
+    badge.title = appInfo.available ? `发现新版本 ${appInfo.latest?.tag || ''} · 点击查看` : `当前版本 v${appInfo.version} · 点击检查更新`;
+}
+function renderUpdateBanner() {
+    const banner = $('#updateBanner');
+    if (!banner) return;
+    const visible = Boolean(appInfo.available && !appInfo.dismissed);
+    banner.classList.toggle('hidden', !visible);
+    if (!visible) return;
+    const latest = appInfo.latest || {};
+    const body = String(latest.body || '').split('\n').map(line => escapeHtml(line)).join('<br>');
+    banner.innerHTML = `<div class="update-banner-inner"><b>发现新版本 ${escapeHtml(latest.tag || latest.version || '')}</b><span>${body || escapeHtml(latest.name || '')}</span><div class="update-banner-actions"><button data-action="apply-update">立即更新</button><button data-action="dismiss-update">稍后提醒</button></div></div>`;
+}
 let combatUnitStrategySelections = {};
 let combatDebugBattleId = null;
 let combatDebugTrace = [];
@@ -5472,6 +5522,27 @@ function bindEvents() {
         if (action === 'combat-narrate') { try { await narrateCombat(); } catch (error) { if (isAbortError(error)) toast('已取消战斗融合。', 'info'); else { toast(`战报融合失败：${error.message}`, 'error'); await blackbox.record('combat', 'narration_failed', { battleId: combatState?.id, error }, { sessionId: store.activeSession?.id }); } } return; }
         if (action) blackbox.record('ui', 'action_clicked', { action }, { sessionId: store.activeSession?.id });
         if (action === 'refresh-personal-shop') { await refreshPersonalShop(); return; }
+        if (action === 'check-update') {
+            const info = await checkForUpdate();
+            if (info.available) toast(`发现新版本 ${info.latest?.tag || ''}，可点击更新横幅或手动运行 update.bat。`, 'info');
+            else if (info.latest?.tag) toast(`已是最新版本 v${info.version}。`, 'success');
+            else toast('未能检查更新（可能离线或无新版本）。', 'info');
+            return;
+        }
+        if (action === 'dismiss-update') { appInfo.dismissed = true; renderUpdateBanner(); return; }
+        if (action === 'apply-update') {
+            if (appInfo.updating) return;
+            appInfo.updating = true;
+            try {
+                const response = await fetch('/api/update', { method: 'POST' });
+                const body = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(body.error || '更新接口异常');
+                toast(body.message || '更新已开始，服务器将自动重启；稍后请刷新页面。', 'info');
+                appInfo.dismissed = true; renderUpdateBanner();
+            } catch (error) { toast(`启动更新失败：${error.message}`, 'error'); }
+            appInfo.updating = false;
+            return;
+        }
         if (action === 'toggle-rail') $('#rail').classList.toggle('open');
         if (action === 'toggle-story-tools') {
             const toolbar = $('#view-chat .adventure-toolbar');
@@ -6197,6 +6268,8 @@ async function boot() {
         fillSettings();
         renderAll();
         await Promise.all([loadLibraries(), loadOpeningData().catch(error => { toast(error.message, 'error'); blackbox.record('setup', 'opening_data_failed', { error }); })]);
+        renderVersionBadge();
+        checkForUpdate();
         const result = await runtime.initializeScripts();
         await blackbox.record('runtime', 'card_runtime_initialized', { card: runtime.card.name, worldbookEntries: runtime.card.character_book?.entries?.length, regexScripts: runtime.card.extensions?.regex_scripts?.length, loaded: result.loaded, failed: result.failed }, { sessionId: store.activeSession?.id });
         renderIntegrity(result);

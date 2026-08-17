@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readCharacterCard } from './lib/card.js';
 import vm from 'node:vm';
@@ -12,6 +13,8 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const cardPath = path.join(root, 'card', 'V3.2.6.png');
 const app = express();
 const port = Number(process.env.REINCARNATION_PORT || 4174);
+let appVersion = '0.1.0';
+try { appVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version || appVersion; } catch { /* keep default */ }
 const MAX_UPSTREAM_CONCURRENCY = 4;
 let activeUpstreamCalls = 0;
 const upstreamQueue = [];
@@ -34,6 +37,21 @@ const combat = createCombatRouter(root);
 app.use('/api/combat', combat.router);
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.get('/api/version', (_req, res) => res.json({ name: 'reincarnation-web', version: appVersion }));
+app.post('/api/update', (_req, res) => {
+    const bat = path.join(root, 'update.bat');
+    if (!fs.existsSync(bat)) return res.status(400).json({ ok: false, error: '缺少 update.bat，请从仓库获取或手动更新' });
+    res.json({ ok: true, message: '更新已开始，服务器将自动重启' });
+    // Spawn the update script detached, then exit this server so the script can
+    // rebuild and start the new version on the same port.
+    setTimeout(() => {
+        try {
+            const child = spawn('cmd.exe', ['/c', bat], { cwd: root, detached: true, stdio: 'ignore', windowsHide: true });
+            child.unref();
+        } catch (error) { console.error('[update] 启动更新脚本失败', error); }
+        setTimeout(() => process.exit(0), 1500);
+    }, 400);
+});
 app.get('/api/card', (_req, res) => {
     try {
         res.json(readCharacterCard(cardPath));

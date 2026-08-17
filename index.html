@@ -46,6 +46,7 @@
     </aside>
 
     <main class="game-main">
+      <div id="updateBanner" class="update-banner hidden" role="status"></div>
       <header class="game-header">
         <button class="mobile-menu" data-action="toggle-rail">☰</button>
         <div class="header-location">
@@ -58,6 +59,7 @@
           <div class="resource coin"><span>空间币</span><b id="hudCoin">0</b></div>
           <div class="resource stability"><span>世界稳定</span><b id="hudStability">100%</b></div>
         </div>
+        <button type="button" class="version-badge" id="versionBadge" data-action="check-update" title="当前版本 · 点击检查更新">v0.1.0</button>
         <button class="runtime-state" id="runtimeBadge" data-panel="settings"><i></i><span>载入中</span></button>
       </header>
       <div id="aiProcessBar" class="ai-process-bar hidden" aria-live="polite" aria-hidden="true"></div>
