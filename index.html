@@ -23,6 +23,7 @@
             <button class="nav-item" data-panel="combat"><span>⚔</span><em>战术演算</em><i id="combatNavState">—</i></button>
             <button class="nav-item" data-panel="missions"><span>◆</span><em>任务</em><i id="missionCount">0</i></button>
             <button class="nav-item" data-panel="world"><span>◎</span><em>世界档案</em></button>
+            <button class="nav-item" data-panel="worldbook"><span>❋</span><em>世界书管理</em></button>
             <button class="nav-item" data-panel="intel"><span>≋</span><em>情报与传闻</em></button>
           </div>
         </section>
@@ -199,6 +200,10 @@
                 <small>AI RECOGNITION · 从剧情自动建遭遇</small>
                 <h3>AI 识别当前遭遇</h3>
                 <p>战斗 AI 读取当前剧情与 MVU，草拟战场声明，通过本地校验后进入建模阶段。</p>
+                <div class="combat-notes-field">
+                  <label for="combatRecognitionNotes">额外需求（可选 · 一并交给战斗 AI）</label>
+                  <textarea id="combatRecognitionNotes" rows="3" placeholder="例如：更大的战场规模、夜战或雨天、狭窄巷道、需要强调的战场设定或敌人特征。"></textarea>
+                </div>
                 <div class="combat-action-cta">
                   <button id="combatDraftAiButton" data-action="combat-draft-ai" data-recognition-state="idle">AI 识别当前遭遇</button>
                   <span id="combatDraftAiStatus" class="combat-ai-recognition-status idle" aria-live="polite">读取当前剧情与 MVU</span>
@@ -284,6 +289,10 @@
             <div class="combat-result-grid">
               <section class="combat-panel result-panel">
                 <header><div><small>NARRATIVE FUSION</small><h2 id="combatResultTitle">剧情融合</h2><span id="combatNarrateStatus" class="combat-narrate-status idle" aria-live="polite">等待可写入结果</span></div><div class="combat-panel-actions"><button data-action="combat-replay">查看重放</button><button data-action="combat-debug-export" title="导出本场请求、操作、报错、事件和重放快照">导出 DEBUG</button><button class="accent-button" id="combatNarrateButton" data-action="combat-narrate">生成并写入剧情</button></div></header>
+                <div class="combat-notes-field combat-disposition-field" id="combatDispositionField">
+                  <label for="combatDispositionNotes">战后处置（可选 · 一并交给正文 AI）</label>
+                  <textarea id="combatDispositionNotes" rows="3" placeholder="例如：搜刮战利品并逐件清点、什么都不要、安葬死者、破坏尸体、审问俘虏、快速撤离……"></textarea>
+                </div>
                 <div id="combatResult"><div class="empty-state">正式暂停或战斗结束后可生成融合剧情。</div></div>
               </section>
               <section class="combat-panel combat-trace-panel">
@@ -291,7 +300,32 @@
                 <div id="combatPromptTraceSummary" class="combat-trace-summary">尚未读取本场黑盒记录。</div>
               </section>
             </div>
-          </section>
+           </section>
+         </div>
+       </section>
+
+      <section class="view data-view" id="view-worldbook">
+        <header class="page-heading"><div><small>CUSTOM WORLD BOOK</small><h1>世界书管理</h1><p>以原卡 3.2.6 世界书格式管理预设之外的自定义条目；与角色卡内置条目并行生效，支持关键词触发、常驻注入、EJS 与聊天深度注入。</p></div></header>
+        <div class="worldbook-layout">
+          <div class="manager-sidebar"><header><h3>自定义条目</h3><button data-action="worldbook-new">＋ 新建</button></header><div id="worldbookList" class="manager-list"></div><div class="user-profile-sidebar-foot"><button type="button" data-action="import-worldbook">导入</button><button type="button" data-action="export-worldbook">导出全部</button><button type="button" data-action="restore-worldbook-seeds" title="恢复本流程预置条目（不会覆盖已有同名条目）">恢复预置</button><input id="worldbookFile" type="file" accept="application/json,.json" hidden /></div></div>
+          <form class="manager-editor worldbook-editor" id="worldbookForm">
+            <input type="hidden" name="id" />
+            <div class="editor-heading"><div><small>WORLDBOOK ENTRY · V3 格式</small><h2 id="worldbookTitle">未选择条目</h2></div><div><button type="button" data-action="delete-worldbook" class="danger">删除</button><button type="submit" class="accent-button">保存条目</button></div></div>
+            <div class="form-grid">
+              <label class="wide"><span>标题 / 备注（comment）</span><input name="comment" placeholder="例如：【战术演算】战斗交接协议" /></label>
+              <label class="wide"><span>主关键词（keys · 逗号分隔，任一命中即激活；勾选常驻则永远注入）</span><input name="keys" placeholder="战斗, 开战, 遭遇战" /></label>
+              <label class="wide"><span>次要关键词（secondary_keys · 逗号分隔，仅作记录）</span><input name="secondaryKeys" placeholder="可选" /></label>
+              <label><span>插入顺序（insertion_order，小者在前）</span><input name="insertionOrder" type="number" value="100" /></label>
+              <label><span>位置（position）</span><select name="position"><option value="before_char">before_char · world_info 槽</option><option value="after_char">after_char · additional_info 槽</option></select></label>
+              <label><span>注入深度（depth · “静态块”以外按深度注入聊天）</span><select name="depth"><option value="">静态块</option><option value="0">0 · 最新楼层之后</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+              <label><span>深度注入角色（role）</span><select name="role"><option value="0">system</option><option value="1">user</option><option value="2">assistant</option></select></label>
+              <label class="checkbox-field"><span>启用（enabled）</span><input name="enabled" type="checkbox" checked /></label>
+              <label class="checkbox-field"><span>常驻（constant）</span><input name="constant" type="checkbox" /></label>
+              <label class="checkbox-field"><span>关键词用正则（use_regex）</span><input name="useRegex" type="checkbox" checked /></label>
+              <label class="wide"><span>内容（支持 EJS 与宏，与卡内条目一致）</span><textarea name="content" rows="14" spellcheck="false" placeholder="条目正文……"></textarea></label>
+            </div>
+            <footer class="worldbook-editor-foot"><span id="worldbookMeta">新条目保存后立即与角色卡内置世界书并行生效。</span></footer>
+          </form>
         </div>
       </section>
 

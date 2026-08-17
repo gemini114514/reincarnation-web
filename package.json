@@ -1,6 +1,6 @@
 {
   "name": "reincarnation-web",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -28,6 +28,7 @@
     "test:combat-completed-map-ui": "node scripts/test-combat-completed-map-ui.mjs",
     "test:auto-combat-handoff": "node scripts/test-auto-combat-handoff-ui.mjs",
     "test:combat-recognition-ui": "node scripts/test-combat-recognition-ui.mjs",
+    "test:combat-terminal-extras": "node scripts/test-combat-terminal-extras-ui.mjs",
     "test:prompt-lab-ui": "node scripts/test-prompt-lab-ui.mjs",
     "test:combat-contact-authority": "node scripts/test-combat-contact-authority.mjs",
     "test:combat-simulator": "node scripts/test-combat-simulator.mjs",

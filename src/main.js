@@ -6,7 +6,7 @@ import * as Vue from 'vue';
 import * as Zod from 'zod';
 import { GameStore, getAffection } from './store.js';
 import { CardRuntime } from './runtime.js';
-import { library, normalizePreset, normalizeScript, normalizeRegexPreset, normalizeUserProfile } from './library.js';
+import { library, normalizePreset, normalizeScript, normalizeRegexPreset, normalizeUserProfile, normalizeWorldbookEntry } from './library.js';
 import { GameplayBlackBox } from './blackbox.js';
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -114,6 +114,8 @@ let selectedRegexPresetId = 'card';
 let selectedPromptEntryId = null;
 let selectedRegexEntryId = null;
 let selectedUserProfileId = null;
+let worldbookEntries = [];
+let selectedWorldbookId = null;
 const scriptFrames = new Map();
 let connectionModelCandidates = [];
 let textEditorOriginal = '';
@@ -165,6 +167,10 @@ let combatActionNotice = null;
 let combatActionNoticeTimer = null;
 let combatSimulatorPickerOpen = false;
 let combatFlowPhase = null;
+// Per model call: how many consecutive upstream timeouts / service errors to
+// absorb with a backoff before the pipeline gives up (without consuming one
+// of the five validation-repair slots).
+const COMBAT_MODEL_SERVICE_RETRIES = 4;
 const APP_REPO = 'gemini114514/reincarnation-web';
 let appInfo = { version: '0.1.0', latest: null, checkedAt: null, checking: false, available: false, dismissed: false };
 function compareVersions(a, b) {
@@ -2107,7 +2113,7 @@ function parseBattleDeclarationResponse(content) {
 }
 
 function combatRecognitionPrompt() {
-    return '你是人工触发的战场声明草拟器。根据给出的真实剧情与 MVU，只输出一个完整的 BattleDeclaration JSON 对象本身，不要输出 Markdown、解释、剧情正文、XML 标签或外层包装（不得写成 {"BattleDeclaration": {...}}）。对象必须包含 schema:"vibe-combat-declaration/v3"、worldLifeLevel（从 MVU 主角层级读罗马数字 Ⅰ–Ⅸ）、contactEstablished（战斗已开始则 true）、contactPairs（已接触的实体 ID 二元数组）、reason、battlefield(kind/shapeHint/description)、participants；participants 至少包含一名 side=player 和一名 side=enemy。【硬性必填】每个 participant 都必须有 id/name/count/side/source/state/relativePosition，其中 state 是单个普通字符串，描述该实体的大致状态、装备或威胁印象，绝不可省略、禁止写成对象或填 HP/EP 数值；source=existing 的 participant 必须填写 reference（引用 MVU 已有实体的准确名称，如“主角”或关系列表成员，不要带 / 路径前缀）。【枚举硬规则】shapeHint 只能填英文 rectangle/circle/unknown；source 只能填英文 existing/create（禁止 new、已有、player、enemy 等）。不得计算或恢复任何战斗结果，不得输出 Step.4、CheckResult、命中、伤害、死亡、残余数量、HP/EP、坐标或 JSONPatch。';
+    return '你是人工触发的战场声明草拟器。根据给出的真实剧情与 MVU，只输出一个完整的 BattleDeclaration JSON 对象本身，不要输出 Markdown、解释、剧情正文、XML 标签或外层包装（不得写成 {"BattleDeclaration": {...}}）。对象必须包含 schema:"vibe-combat-declaration/v3"、worldLifeLevel（从 MVU 主角层级读罗马数字 Ⅰ–Ⅸ）、contactEstablished（战斗已开始则 true）、contactPairs（已接触的实体 ID 二元数组）、reason、battlefield(kind/shapeHint/description)、participants；participants 至少包含一名 side=player 和一名 side=enemy。【硬性必填】每个 participant 都必须有 id/name/count/side/source/state/relativePosition，其中 state 是单个普通字符串，描述该实体的大致状态、装备或威胁印象，绝不可省略、禁止写成对象或填 HP/EP 数值；source=existing 的 participant 必须填写 reference（引用 MVU 已有实体的准确名称，如“主角”或关系列表成员，不要带 / 路径前缀）。【枚举硬规则】shapeHint 只能填英文 rectangle/circle/unknown；source 只能填英文 existing/create（禁止 new、已有、player、enemy 等）。【玩家额外需求】若输入包含 playerRequirements 字段，把它视为玩家对本场遭遇的硬性偏好（例如更大的战场规模、夜战或雨天、狭窄地形、需要强调的战场设定或敌人特征），必须体现在 battlefield 尺寸与描述、participants 状态描述中；与剧情事实冲突而确实无法满足时保持声明合法，不要编造。【禁止】不得计算或恢复任何战斗结果，不得输出 Step.4、CheckResult、命中、伤害、死亡、残余数量、HP/EP、坐标或 JSONPatch。';
 }
 
 function battleDeclarationFromMessage(content) {
@@ -2476,7 +2482,7 @@ function renderCombatModelStatus() {
     const state = combatModelingState;
     const labels = { idle: '等待剧情 AI 的战场声明', declaration: '正文声明已接收', modeling: '战斗 AI 正在建模', repair: '战斗 AI 正在修复模型', ready: '建模通过 · 即将进入编制', failed: '建模失败，等待人工介入' };
     const actions = state.phase === 'failed'
-        ? `${pendingBattleDeclaration?.declaration ? '<button data-action="combat-edit-declaration">编辑战场声明</button>' : ''}<button data-action="combat-open-model-diagnostics">查看诊断 / 人工修正</button>`
+        ? `${pendingCombatModel?.declaration ? '<button data-action="combat-retry-modeling">继续重试</button>' : ''}${pendingBattleDeclaration?.declaration ? '<button data-action="combat-edit-declaration">编辑战场声明</button>' : ''}<button data-action="combat-open-model-diagnostics">查看诊断 / 人工修正</button>`
         : state.phase === 'ready' ? '<button data-action="combat-open-prepared-model">查看最终模型</button>' : '';
     root.className = `combat-model-status ${state.phase}`;
     root.innerHTML = `<div><small>COMBAT PIPELINE</small><b>${escapeHtml(labels[state.phase] || state.phase)}</b><span>${escapeHtml(state.detail || '正文声明 → 战斗 AI 建模 → 本地校验 → 固定种子回合制')}</span></div>${actions}`;
@@ -2775,25 +2781,47 @@ function sanitizeBasicAttackAbilities(model) {
     return copy;
 }
 
-async function modelBattleFromDeclaration(declaration, sourceMessageId = null, seedModel = null, { autoCreate = false, protocolHandoff = null } = {}) {
+async function modelBattleFromDeclaration(declaration, sourceMessageId = null, seedModel = null, { autoCreate = false, protocolHandoff = null, resume = null } = {}) {
     if (combatBusy) return;
     const connection = combatConnection();
     if (!connection?.baseUrl || !connection?.model) { showPanel('settings'); throw new Error('请先配置战斗 AI 线路，再确认战场声明'); }
     combatBusy = true;
     snapCombatFlowPhase();
     try {
-        const assets = await ensureCombatAssetContext();
+        const assets = resume?.requiredAssets || await ensureCombatAssetContext();
         const baseContext = { declaration, knownEntities: battleKnownEntities(), requiredAssets: assets, rules: { version: 'vibe-combat-v2-turn-field', spatial: 'only boundary, circles, distance, movement; no cover/terrain/pathfinding' } };
         let candidate = seedModel;
-        let previousModel = null;
-        const repairs = [];
-        for (let attempt = 1; attempt <= 5; attempt += 1) {
-            combatModelingState = { phase: attempt === 1 ? 'modeling' : 'repair', detail: `第 ${attempt} / 5 次${attempt === 1 ? '数字化建模' : '修复校验错误'}…` };
+        let previousModel = resume?.previousModel || null;
+        const repairs = [...(resume?.repairs || [])];
+        let serviceExhausted = false;
+        let lastServiceError = null;
+        for (let round = 1; round <= 5; round += 1) {
+            const firstCall = repairs.length === 0 && round === 1;
+            combatModelingState = { phase: firstCall ? 'modeling' : 'repair', detail: `第 ${repairs.length + 1} 次${firstCall ? '数字化建模' : `修复校验错误${resume ? '（继续重试）' : ''}`}…` };
             renderCombatModelStatus(); renderCombat();
             if (!candidate) {
                 const repairInput = { ...baseContext, repairs };
                 if (previousModel) repairInput.previousModel = previousModel;
-                const response = await callCombatAi(combatModelPrompt(), JSON.stringify(repairInput, null, 2), attempt === 1 ? 'battle_model_started' : 'battle_model_repair');
+                let response = null;
+                for (let serviceAttempt = 1; serviceAttempt <= COMBAT_MODEL_SERVICE_RETRIES; serviceAttempt += 1) {
+                    try {
+                        response = await callCombatAi(combatModelPrompt(), JSON.stringify(repairInput, null, 2), firstCall ? 'battle_model_started' : 'battle_model_repair');
+                        break;
+                    } catch (error) {
+                        if (isAbortError(error)) throw error;
+                        lastServiceError = error;
+                        await blackbox.record('combat-model', 'model_service_error', { attempt: repairs.length + 1, serviceAttempt, error: error?.message || String(error) }, { sessionId: store.activeSession?.id });
+                        if (serviceAttempt >= COMBAT_MODEL_SERVICE_RETRIES) break;
+                        // An upstream timeout or busy service must neither
+                        // consume one of the five repair slots nor abort the
+                        // whole modeling protocol: back off briefly, then
+                        // repeat the exact same model call.
+                        combatModelingState = { phase: 'repair', detail: `战斗 AI 服务超时或出错（自动重试 ${serviceAttempt} / ${COMBAT_MODEL_SERVICE_RETRIES - 1}）：${error?.message || error}` };
+                        renderCombatModelStatus();
+                        await new Promise(resolve => setTimeout(resolve, 1500 * serviceAttempt));
+                    }
+                }
+                if (!response) { serviceExhausted = true; break; }
                 try {
                     candidate = extractJsonObject(response.content);
                 } catch (error) {
@@ -2801,35 +2829,38 @@ async function modelBattleFromDeclaration(declaration, sourceMessageId = null, s
                     // not abort the whole five-attempt protocol.  Keep the
                     // exact parser error in the blackbox so it is diagnosable.
                     const report = { valid: false, errors: [{ code: 'parse.error', path: '$', message: error.message }] };
-                    repairs.push({ attempt, report });
-                    await blackbox.record('combat-model', 'model_rejected', { attempt, error: error.message, validation: report, responseParse: 'failed' }, { sessionId: store.activeSession?.id });
+                    repairs.push({ attempt: repairs.length + 1, report });
+                    await blackbox.record('combat-model', 'model_rejected', { attempt: repairs.length, error: error.message, validation: report, responseParse: 'failed' }, { sessionId: store.activeSession?.id });
                     candidate = null;
                     continue;
                 }
             }
             candidate = sanitizeBasicAttackAbilities(attachAuthoritativeDeclarationProtocol(attachAuthoritativeExistingEntities(attachAuthoritativePlayerMvu(candidate, assets), declaration), declaration));
             const validation = await combatRequest('/model/validate', { method: 'POST', body: JSON.stringify({ declaration, model: candidate, requiredAssets: assets, strict: true }) });
-            await blackbox.record('combat-model', validation.ok ? 'model_validated' : 'model_rejected', { attempt, declaration, model: candidate, validation }, { sessionId: store.activeSession?.id });
+            await blackbox.record('combat-model', validation.ok ? 'model_validated' : 'model_rejected', { attempt: repairs.length + 1, declaration, model: candidate, validation }, { sessionId: store.activeSession?.id });
             if (validation.ok) {
-                pendingCombatModel = { declaration, model: candidate, requiredAssets: assets, validation, attempts: attempt, sourceMessageId, repairs };
-                combatModelingState = { phase: 'ready', detail: `第 ${attempt} 次校验通过；已自动进入第 3 步编制部署，请选择策略与操控方式。` };
+                pendingCombatModel = { declaration, model: candidate, requiredAssets: assets, validation, attempts: repairs.length + 1, sourceMessageId, repairs };
+                combatModelingState = { phase: 'ready', detail: `第 ${repairs.length + 1} 次校验通过；已自动进入第 3 步编制部署，请选择策略与操控方式。` };
                 renderCombatModelStatus();
                 // A validated model never waits on a second human checkpoint:
                 // create it immediately, then stop at step 3 so the player can
                 // choose per-unit tactics and manual/automatic control before
                 // the local engine rolls initiative.
-                await blackbox.record('combat-model', 'model_auto_create', { sourceMessageId, attempt, protocolHandoff, battleAuthority: 'local', nextStep: 'deploy' }, { sessionId: store.activeSession?.id });
+                await blackbox.record('combat-model', 'model_auto_create', { sourceMessageId, attempt: repairs.length + 1, protocolHandoff, battleAuthority: 'local', nextStep: 'deploy' }, { sessionId: store.activeSession?.id });
                 await createCombatFromPreparedModel(pendingCombatModel, { autoStart: false, autoDeploy: true });
                 return;
             }
-            repairs.push({ attempt, report: validation.report });
+            repairs.push({ attempt: repairs.length + 1, report: validation.report });
             previousModel = candidate;
             candidate = null;
         }
-        pendingCombatModel = { declaration, model: null, requiredAssets: assets, attempts: 5, sourceMessageId, repairs, validation: repairs.at(-1)?.report };
-        combatModelingState = { phase: 'failed', detail: '战斗 AI 已连续五次未能构造可计算战场；请选择人工修正或回到剧情。' };
+        pendingCombatModel = { declaration, model: null, requiredAssets: assets, attempts: repairs.length, sourceMessageId, protocolHandoff, repairs, validation: repairs.at(-1)?.report || null, previousModel, resumeRounds: (resume?.resumeRounds || 0) + 1 };
+        combatModelingState = { phase: 'failed', detail: serviceExhausted
+            ? `战斗 AI 服务连续 ${COMBAT_MODEL_SERVICE_RETRIES} 次超时或出错${lastServiceError ? `：${lastServiceError.message || lastServiceError}` : ''}；可点击“继续重试”，或选择人工修正。`
+            : '战斗 AI 已连续五次未能构造可计算战场；可点击“继续重试”再试五次，或选择人工修正。' };
         renderCombatModelStatus();
-        openCombatModelDiagnostics();
+        snapCombatFlowPhase();
+        renderCombat();
     } catch (error) {
         if (isAbortError(error)) { combatModelingState = { phase: 'idle', detail: '已取消建模' }; renderCombatModelStatus(); }
         throw error;
@@ -2950,6 +2981,11 @@ async function draftCombatWithAi(sourceMessageId = null) {
             recentStory: session?.messages?.filter(item => !item.isHidden).slice(-8).map(item => ({ role: item.role, content: item.content })),
             stat_data: runtime.variables.stat_data,
         };
+        // Free-form extra requirements (更大的战场规模 / 夜战 / 强调设定...)
+        // typed next to the recognition button ride along as player
+        // preferences for the drafting model.
+        const recognitionNotes = String($('#combatRecognitionNotes')?.value || '').trim();
+        if (recognitionNotes) context.playerRequirements = recognitionNotes;
         combatRecognitionState.detail = '战斗 AI 正在分析遭遇';
         renderCombatRecognitionControl();
         const prompt = await callCombatAi(combatRecognitionPrompt(), `当前剧情与 MVU：\n${JSON.stringify(context)}`, 'battle_declaration_draft');
@@ -3892,8 +3928,16 @@ async function narrateCombat() {
     narrationAiProcessId = beginAiProcess('正文 AI', simulation ? '战斗模拟剧情 · 等待首包' : '战斗融合剧情 · 等待首包', () => narrationController.abort(new DOMException('用户已取消战斗融合', 'AbortError')));
     try {
         const narrative = await combatRequest(`/${combatState.id}/narrative-bundle`);
-        const narrativeUserPrompt = simulation ? `${narrative.userPrompt}\n\n这是玩家已明确确认要写入当前剧情分支的“模拟测试记录”。保留全部本地裁定事实，将它写成主神终端/战术演算终端内进行的虚拟测试剧情（可用于商店升级、配装或战术验证之后的剧情片段），不得把它擅自叙述为任务世界中已经真实发生的战斗，也不得凭空改写现实 MVU。` : narrative.userPrompt;
-        await blackbox.record('combat', 'narration_started', { battleId: combatState.id, bundle: narrative.bundle }, { sessionId: store.activeSession?.id, turnId });
+        // Post-battle disposition instructions (搜刮战利品 / 什么都不要 /
+        // 安葬死者 ...) reuse the extra-requirements box pattern: they are
+        // appended to the fusion prompt so the story AI writes the aftermath
+        // without touching the locally adjudicated outcome.
+        const dispositionNotes = String($('#combatDispositionNotes')?.value || '').trim();
+        const dispositionPrompt = dispositionNotes ? `\n\n玩家战后处置要求（只描写处置过程与合理结果，不得改写已裁定的命中、伤害、死亡、资源或胜负）：${dispositionNotes}` : '';
+        const narrativeUserPrompt = simulation
+            ? `${narrative.userPrompt}${dispositionPrompt}\n\n这是玩家已明确确认要写入当前剧情分支的“模拟测试记录”。保留全部本地裁定事实，将它写成主神终端/战术演算终端内进行的虚拟测试剧情（可用于商店升级、配装或战术验证之后的剧情片段），不得把它擅自叙述为任务世界中已经真实发生的战斗，也不得凭空改写现实 MVU。`
+            : `${narrative.userPrompt}${dispositionPrompt}`;
+        await blackbox.record('combat', 'narration_started', { battleId: combatState.id, bundle: narrative.bundle, dispositionNotes }, { sessionId: store.activeSession?.id, turnId });
         let body = {}, prose = '', fallbackError = null;
         try {
             const narrativeModules = [
@@ -3914,7 +3958,7 @@ async function narrateCombat() {
             prose = `本地战斗演算在第 ${narrative.bundle.rounds || combatState.round} 回合抵达正式结算点。${narrative.bundle.winner ? `胜者为${narrative.bundle.winner === 'player' ? '玩家方' : '敌方'}。` : `演算因“${narrative.bundle.pauseReason?.type || '安全暂停'}”暂停。`}失能与伤亡记录：${casualties}。\n\n> 正文模型暂不可用，本楼使用本地权威战报模板；稍后可依据同一重放重新生成叙事，不会重掷。`;
             await blackbox.record('combat', 'narration_fallback_used', { battleId: combatState.id, error }, { sessionId: store.activeSession?.id, turnId });
         }
-        const checks = (narrative.bundle.checkResults || []).slice(-20).map(check => `- ${check.actorId || ''} → ${check.targetId}：D100 ${check.selected} + ${check.modifier} = ${check.total} / DC ${check.defenseDC}，${check.outcome}`).join('\n');
+        const checks = (narrative.bundle.checks || narrative.bundle.checkResults || []).slice(-20).map(check => `- ${check.actorId || ''} → ${check.targetId}：D100 ${check.selected} + ${check.modifier} = ${check.total} / DC ${check.defenseDC}，${check.outcome}`).join('\n');
         const patch = simulation ? [] : narrative.bundle.mvuPatch || [];
         const content = `${prose}\n\n${checks ? `<CheckResult>\n${checks}\n</CheckResult>\n\n` : ''}<UpdateVariable><JSONPatch>\n${JSON.stringify(patch, null, 2)}\n</JSONPatch></UpdateVariable>`;
         writtenMessage = store.addMessage('assistant', content);
@@ -3927,6 +3971,10 @@ async function narrateCombat() {
         const narratedStatus = combatState.status;
         await blackbox.record('combat', 'narration_completed', { battleId: combatState.id, messageId: writtenMessage.id, tokenUsage: writtenMessage.tokenUsage, prose, fallback: Boolean(fallbackError), importedFromSimulation: simulation }, { sessionId: store.activeSession?.id, turnId });
         combatNarrationState = { battleId, phase: 'success', detail: simulation ? '模拟测试已写入当前分支' : '战斗融合剧情已写入当前分支' };
+        // The disposition box is a one-shot aftermath instruction; clear it so
+        // the next battle cannot silently inherit stale loot/search orders.
+        const dispositionInput = $('#combatDispositionNotes');
+        if (dispositionInput) dispositionInput.value = '';
         await cleanCombatTerminalAfterNarration({ battleId, status: narratedStatus, messageId: writtenMessage.id, simulation });
         terminalCleaned = true;
         // renderAll() intentionally preserves the currently viewed floor.  A
@@ -4064,7 +4112,11 @@ function promptLabStoryMessages() {
 function promptLabCombatMessages(mode) {
     const qualities = { strengthModifier: 'F', dexterityModifier: 'F', constitutionModifier: 'F', spiritModifier: 'F', charismaModifier: 'F' };
     const context = { sourceMessageId: currentStoryFloor()?.narrative?.id || null, recentStory: store.activeSession?.messages?.filter(item => !item.isHidden).slice(-8).map(item => ({ role: item.role, content: item.content })) || [], stat_data: runtime?.variables?.stat_data || {} };
-    if (mode === 'combat-recognition') return buildCombatAiPromptPackage(combatRecognitionPrompt(), `当前剧情与 MVU：\n${JSON.stringify(context)}`, 'battle_declaration_draft');
+    if (mode === 'combat-recognition') {
+        const recognitionNotes = String($('#combatRecognitionNotes')?.value || '').trim();
+        if (recognitionNotes) context.playerRequirements = recognitionNotes;
+        return buildCombatAiPromptPackage(combatRecognitionPrompt(), `当前剧情与 MVU：\n${JSON.stringify(context)}`, 'battle_declaration_draft');
+    }
     if (mode === 'combat-strategy') return buildCombatAiPromptPackage('你是战斗策略编译器。只把玩家策略转换为 JSON，不计算战果。允许字段：priorities(nearest/weakest/boss 的排列)、preserveEpPercent、allowItems、allowFriendlyFire、retreat、reactionPolicy(auto/conserve)、takeoverTriggers([{field,operator,value}])。field 仅限 playerHpPercent/playerEpPercent/enemyDefeatedPercent/allyDying/bossPhaseChanged/round/noLegalAction。只输出 JSON。', `战场摘要：${JSON.stringify({ round: combatState?.round || 0, zones: combatState?.zones || [], cohorts: combatState?.cohorts || [] })}\n玩家策略：${$('#combatStrategy')?.value || '优先保护主角并攻击最近敌人。'}`, 'strategy_compile');
     const declaration = pendingBattleDeclaration?.declaration || { schema: 'vibe-combat-declaration/v3', worldLifeLevel: 'Ⅰ', contactEstablished: true, contactPairs: [['hero', 'enemy']], battlefield: { kind: '当前场景', shapeHint: 'unknown', description: '等待正文战场声明' }, participants: [{ id: 'hero', name: '主角', side: 'player', source: 'existing', reference: '主角', state: '当前 MVU 状态', lifeLevel: 'Ⅰ', attributeQualities: qualities, relativePosition: '中心' }, { id: 'enemy', name: '待声明敌对实体', side: 'enemy', source: 'create', state: '待正文补充', lifeLevel: 'Ⅰ', attributeQualities: qualities, relativePosition: '未知' }] };
     const modelContext = { declaration, knownEntities: battleKnownEntities(), requiredAssets: [], rules: { version: 'vibe-combat-v2-turn-field', spatial: 'only boundary, circles, distance, movement; no cover/terrain/pathfinding' } };
@@ -4080,7 +4132,9 @@ async function buildPromptLabPayload(mode = selectedPromptLabMode) {
             return { mode, messages: applyPromptModuleMessages(modules, mode), modules: promptModuleSnapshot(modules, mode), overrideApplied: promptOverride(mode).enabled, moduleOverrideApplied: promptModuleOverrideApplied(mode) };
         }
         const narrative = await combatRequest(`/${combatState.id}/narrative-bundle`);
-        const modules = [{ id: 'preset', label: PROMPT_MODULE_DEFINITIONS.preset.label, messages: [] }, { id: 'rules', label: '战斗叙事规则', messages: [{ role: 'system', content: narrative.systemPrompt }] }, { id: 'work', label: PROMPT_MODULE_DEFINITIONS.work.label, messages: [{ role: 'user', content: narrative.userPrompt }] }];
+        const dispositionNotes = String($('#combatDispositionNotes')?.value || '').trim();
+        const narrativeWorkPrompt = dispositionNotes ? `${narrative.userPrompt}\n\n玩家战后处置要求（只描写处置过程与合理结果，不得改写已裁定的命中、伤害、死亡、资源或胜负）：${dispositionNotes}` : narrative.userPrompt;
+        const modules = [{ id: 'preset', label: PROMPT_MODULE_DEFINITIONS.preset.label, messages: [] }, { id: 'rules', label: '战斗叙事规则', messages: [{ role: 'system', content: narrative.systemPrompt }] }, { id: 'work', label: PROMPT_MODULE_DEFINITIONS.work.label, messages: [{ role: 'user', content: narrativeWorkPrompt }] }];
         return { mode, battleId: combatState.id, messages: applyPromptModuleMessages(modules, mode), modules: promptModuleSnapshot(modules, mode), bundle: narrative.bundle, overrideApplied: promptOverride(mode).enabled, moduleOverrideApplied: promptModuleOverrideApplied(mode) };
     }
     if (mode === 'shop') {
@@ -4499,6 +4553,150 @@ function installPresetBridge() {
     Object.assign(window.TavernHelper, api);
 }
 
+// Preset entries the reincarnation flow needs on top of the card's built-in
+// worldbook: the local-authority combat handoff and the post-battle
+// disposition rules.  Seeded once into the user-managed store; fully editable
+// afterwards and never force-restored over user edits.
+const WORLDBOOK_SEEDS = [
+    {
+        comment: '【战术演算】本地权威战斗交接', keys: ['战斗', '交战', '开战', '遭遇战', '战术演算', '袭击'], constant: false,
+        insertion_order: 900, position: 'before_char',
+        content: '当剧情走向战斗时，正文 AI 不得自行裁定命中、伤害、死亡或胜负；应输出 BattleDeclaration 战场声明并交给本地战术演算终端以固定种子结算。战斗期间保持战场态势描述克制，等待本地裁定结果。战后以本地 CheckResult 与战报大纲为唯一事实来源融合剧情，不得改写骰点、伤害、死亡与胜负。',
+    },
+    {
+        comment: '【战后处置】搜刮与战利品规则', keys: ['搜刮', '战利品', '打扫战场', '战后处置', '缴获', '尸体'], constant: false,
+        insertion_order: 901, position: 'before_char',
+        content: '战斗结束后，若玩家提出战后处置要求（如搜刮战利品、安葬死者、破坏尸体、审问俘虏、快速撤离），正文 AI 应围绕本地战报已裁定的伤亡、位置与状态描写处置过程与合理结果。物品与资源发放需与战场事实、参与者状态和世界物价一致；不得凭空捏造未在裁定或处置逻辑中出现的高价值战利品，也不得复写已经结束的战斗经过。',
+    },
+];
+
+function worldbookDepthOption(entry) {
+    const depth = entry?.extensions?.depth;
+    return depth !== null && depth !== undefined && Number.isFinite(Number(depth)) ? String(Number(depth)) : '';
+}
+
+function renderWorldbookManager() {
+    const listRoot = $('#worldbookList');
+    if (!listRoot) return;
+    listRoot.innerHTML = worldbookEntries.map(entry => `<div class="manager-item ${entry.id === selectedWorldbookId ? 'active' : ''}" data-worldbook-id="${entry.id}"><b>${entry.enabled !== false ? '<i class="active-dot"></i>' : ''}${escapeHtml(entry.comment || `条目 ${entry.id}`)}</b><small>${entry.constant ? '常驻' : (entry.keys.length ? entry.keys.join('、') : '未设关键词')} · 顺序 ${entry.insertion_order}${worldbookDepthOption(entry) ? ` · 深度 ${worldbookDepthOption(entry)}` : ''}</small></div>`).join('') || '<div class="empty-state">还没有自定义世界书条目；点击“＋ 新建”或导入 JSON。</div>';
+    const form = $('#worldbookForm');
+    const entry = worldbookEntries.find(item => item.id === selectedWorldbookId);
+    if (!entry) {
+        $('#worldbookTitle').textContent = '未选择条目';
+        $('#worldbookMeta').textContent = '新条目保存后立即与角色卡内置世界书并行生效。';
+        form?.reset();
+        if (form?.elements?.insertionOrder) form.elements.insertionOrder.value = '100';
+        return;
+    }
+    $('#worldbookTitle').textContent = entry.comment || `条目 ${entry.id}`;
+    $('#worldbookMeta').textContent = `${entry.origin === 'seed' ? '流程预置条目' : '自建条目'} · 更新于 ${entry.updatedAt || '-'} · ${entry.content.length.toLocaleString()} 字符`;
+    form.elements.id.value = String(entry.id);
+    form.elements.comment.value = entry.comment;
+    form.elements.keys.value = entry.keys.join(', ');
+    form.elements.secondaryKeys.value = entry.secondary_keys.join(', ');
+    form.elements.insertionOrder.value = String(entry.insertion_order);
+    form.elements.position.value = entry.position;
+    form.elements.depth.value = worldbookDepthOption(entry);
+    form.elements.role.value = String(entry.extensions?.role || 0);
+    form.elements.enabled.checked = entry.enabled !== false;
+    form.elements.constant.checked = Boolean(entry.constant);
+    form.elements.useRegex.checked = entry.use_regex !== false;
+    form.elements.content.value = entry.content;
+}
+
+function applyWorldbookEntriesToRuntime() {
+    runtime?.setCustomWorldbook?.(worldbookEntries);
+}
+
+async function saveWorldbookForm(event) {
+    event.preventDefault();
+    const form = $('#worldbookForm');
+    const existing = worldbookEntries.find(item => String(item.id) === form.elements.id.value);
+    const depth = form.elements.depth.value;
+    const raw = {
+        ...(existing || {}),
+        id: existing?.id,
+        keys: form.elements.keys.value,
+        secondary_keys: form.elements.secondaryKeys.value,
+        comment: form.elements.comment.value.trim() || '未命名条目',
+        content: form.elements.content.value,
+        constant: form.elements.constant.checked,
+        insertion_order: Number(form.elements.insertionOrder.value) || 0,
+        enabled: form.elements.enabled.checked,
+        position: form.elements.position.value,
+        use_regex: form.elements.useRegex.checked,
+        extensions: { ...(existing?.extensions || {}), role: Number(form.elements.role.value) || 0, ...(depth === '' ? {} : { depth: Number(depth) }) },
+    };
+    if (raw.extensions && depth === '') delete raw.extensions.depth;
+    const entry = normalizeWorldbookEntry(raw);
+    await library.put('worldbooks', entry);
+    worldbookEntries = worldbookEntries.filter(item => item.id !== entry.id).concat(entry);
+    selectedWorldbookId = entry.id;
+    applyWorldbookEntriesToRuntime();
+    renderWorldbookManager();
+    toast(`世界书条目“${entry.comment}”已保存并生效`, 'success');
+}
+
+async function createWorldbookEntry() {
+    const entry = normalizeWorldbookEntry({ comment: '新条目', insertion_order: 100 });
+    await library.put('worldbooks', entry);
+    worldbookEntries = worldbookEntries.concat(entry);
+    selectedWorldbookId = entry.id;
+    applyWorldbookEntriesToRuntime();
+    renderWorldbookManager();
+    $('#worldbookForm')?.elements?.comment?.focus();
+}
+
+async function deleteWorldbookEntry() {
+    const entry = worldbookEntries.find(item => item.id === selectedWorldbookId);
+    if (!entry) return toast('请先在左侧选择要删除的条目', 'error');
+    await library.delete('worldbooks', entry.id);
+    worldbookEntries = worldbookEntries.filter(item => item.id !== entry.id);
+    selectedWorldbookId = worldbookEntries[0]?.id ?? null;
+    applyWorldbookEntriesToRuntime();
+    renderWorldbookManager();
+    toast(`已删除世界书条目“${entry.comment}”`, 'info');
+}
+
+async function importWorldbookFile(file) {
+    const parsed = JSON.parse(await file.text());
+    const rawEntries = Array.isArray(parsed) ? parsed : parsed?.entries || parsed?.character_book?.entries;
+    if (!Array.isArray(rawEntries) || !rawEntries.length) throw new Error('不是可识别的世界书 JSON：缺少条目数组');
+    const imported = rawEntries.map(item => normalizeWorldbookEntry({ ...item, origin: 'user' }));
+    for (const entry of imported) await library.put('worldbooks', entry);
+    const importedIds = new Set(imported.map(item => item.id));
+    worldbookEntries = worldbookEntries.filter(item => !importedIds.has(item.id)).concat(imported);
+    selectedWorldbookId = imported[0]?.id ?? selectedWorldbookId;
+    applyWorldbookEntriesToRuntime();
+    renderWorldbookManager();
+    toast(`已导入 ${imported.length} 条世界书条目`, 'success');
+}
+
+function exportWorldbookEntries() {
+    if (!worldbookEntries.length) return toast('还没有可导出的世界书条目', 'error');
+    const payload = { name: '轮回战场·自定义世界书', entries: worldbookEntries };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `reincarnation-worldbook-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+}
+
+async function restoreWorldbookSeeds() {
+    let restored = 0;
+    for (const seed of WORLDBOOK_SEEDS) {
+        if (worldbookEntries.some(item => item.comment === seed.comment)) continue;
+        const entry = normalizeWorldbookEntry({ ...seed, origin: 'seed' });
+        await library.put('worldbooks', entry);
+        worldbookEntries = worldbookEntries.concat(entry);
+        restored += 1;
+    }
+    applyWorldbookEntriesToRuntime();
+    renderWorldbookManager();
+    toast(restored ? `已恢复 ${restored} 条流程预置条目` : '流程预置条目均已存在', restored ? 'success' : 'info');
+}
+
 async function loadLibraries() {
     [presets, scripts, profiles, userProfiles, regexPresets] = await Promise.all([library.list('presets'), library.list('scripts'), library.list('profiles'), library.list('userProfiles'), library.list('regexPresets')]);
     // One-time migration for presets imported before prompt-order alignment
@@ -4531,13 +4729,20 @@ async function loadLibraries() {
         store.updateSettings({ userName: activeUserProfile.displayName || activeUserProfile.name || '轮回者', persona: activeUserProfile.persona || '' });
     }
     selectedUserProfileId = activeUserProfile.id;
+    worldbookEntries = (await library.list('worldbooks')).map(item => normalizeWorldbookEntry(item));
+    if (!worldbookEntries.length) {
+        for (const seed of WORLDBOOK_SEEDS) worldbookEntries.push(normalizeWorldbookEntry({ ...seed, origin: 'seed' }));
+        await Promise.all(worldbookEntries.map(entry => library.put('worldbooks', entry)));
+    }
+    selectedWorldbookId = worldbookEntries[0]?.id ?? null;
+    runtime.setCustomWorldbook(worldbookEntries);
     selectedPresetId = store.data.settings.activePresetId || presets[0]?.id || null;
     selectedScriptId = scripts[0]?.id || null;
     const active = presets.find(item => item.id === store.data.settings.activePresetId) || null;
     runtime.setPreset(active);
     runtime.setRegexPresets(regexPresets);
     installPresetBridge();
-    renderPresetManager(); renderScriptManager(); renderRegexManager(); renderConnectionManager(); renderUserProfileManager();
+    renderPresetManager(); renderScriptManager(); renderRegexManager(); renderConnectionManager(); renderUserProfileManager(); renderWorldbookManager();
     for (const script of scripts.filter(item => item.enabled)) executeAssistantScript(script).catch(error => toast(`${script.name} 启动失败：${error.message}`, 'error'));
 }
 
@@ -4755,7 +4960,7 @@ function showPanel(panel) {
     $$('.view').forEach(item => item.classList.toggle('active', item.id === `view-${panel}`));
     $$('.nav-item[data-panel], .mobile-bottom-nav [data-panel]').forEach(item => item.classList.toggle('active', item.dataset.panel === panel));
     document.documentElement.dataset.activePanel = panel;
-    const labels = { hub: '世界总览', chat: '剧情楼层', combat: '战术演算', status: '主角档案', shop: '个人商店终端', inventory: '装备与道具', abilities: '技能与血统', missions: '任务', world: '世界档案', relations: '实体关系', intel: '情报与传闻', archive: '存档管理', 'user-settings': '用户设定', settings: '系统设置' };
+    const labels = { hub: '世界总览', chat: '剧情楼层', combat: '战术演算', status: '主角档案', shop: '个人商店终端', inventory: '装备与道具', abilities: '技能与血统', missions: '任务', world: '世界档案', worldbook: '世界书管理', relations: '实体关系', intel: '情报与传闻', archive: '存档管理', 'user-settings': '用户设定', settings: '系统设置' };
     $('#routeLabel').textContent = labels[panel] ?? panel;
     $('#rail').classList.remove('open');
     if (panel !== 'chat') {
@@ -5263,6 +5468,8 @@ function bindEvents() {
         if (promptEntry && !event.target.matches('[data-prompt-toggle]')) { selectedPromptEntryId = promptEntry.dataset.promptId; renderPresetManager(); return; }
         const scriptItem = event.target.closest('[data-script-id]');
         if (scriptItem) { selectedScriptId = scriptItem.dataset.scriptId; renderScriptManager(); return; }
+        const worldbookItem = event.target.closest('[data-worldbook-id]');
+        if (worldbookItem) { selectedWorldbookId = Number(worldbookItem.dataset.worldbookId); renderWorldbookManager(); return; }
         const regexItem = event.target.closest('[data-regex-preset-id]');
         if (regexItem) { selectedRegexPresetId = regexItem.dataset.regexPresetId; selectedRegexEntryId = null; renderRegexManager(); return; }
         const regexEntry = event.target.closest('[data-regex-entry-id]');
@@ -5462,6 +5669,16 @@ function bindEvents() {
             renderCombat(); return;
         }
         if (action === 'combat-open-prepared-model') { openPreparedCombatModel(); return; }
+        if (action === 'combat-retry-modeling') {
+            if (!pendingCombatModel?.declaration) return toast('没有可继续重试的战场声明', 'error');
+            try {
+                // Continue the five-attempt protocol from the accumulated
+                // repair history so the model sees every previous rejection
+                // instead of restarting from a blank slate.
+                await modelBattleFromDeclaration(pendingCombatModel.declaration, pendingCombatModel.sourceMessageId, null, { protocolHandoff: pendingCombatModel.protocolHandoff, resume: pendingCombatModel });
+            } catch (error) { if (isAbortError(error)) toast('已取消建模重试。', 'info'); else toast(`建模重试失败：${error.message || error}`, 'error'); }
+            return;
+        }
         if (action === 'combat-edit-declaration') { if (pendingBattleDeclaration?.declaration) await openBattleDeclarationPreview(pendingBattleDeclaration.declaration, pendingBattleDeclaration.sourceMessageId); return; }
         if (action === 'combat-open-model-diagnostics') { openCombatModelDiagnostics(); return; }
         if (action === 'combat-new') {
@@ -5748,6 +5965,14 @@ function bindEvents() {
         if (action === 'import-user-profile') $('#userProfileFile').click();
         if (action === 'export-user-profile') exportUserProfile();
         if (action === 'export-user-profiles') exportUserProfiles();
+        if (action === 'worldbook-new') await createWorldbookEntry();
+        if (action === 'delete-worldbook') {
+            const entry = worldbookEntries.find(item => item.id === selectedWorldbookId);
+            if (entry && confirm(`删除世界书条目“${entry.comment}”？`)) await deleteWorldbookEntry();
+        }
+        if (action === 'import-worldbook') $('#worldbookFile').click();
+        if (action === 'export-worldbook') exportWorldbookEntries();
+        if (action === 'restore-worldbook-seeds') await restoreWorldbookSeeds();
         if (action === 'new-connection') createConnectionDraft();
         if (action === 'delete-connection') {
             const id = $('#connectionForm').elements.id.value;
@@ -5995,6 +6220,12 @@ function bindEvents() {
         try { const preset = normalizeRegexPreset(JSON.parse(await file.text()), file.name); await library.put('regexPresets', preset); regexPresets.push(preset); selectedRegexPresetId = preset.id; renderRegexManager(); refreshRegexDisplay('preset_imported'); toast(`已导入正则预设：${preset.name}，已重渲染剧情`, 'success'); }
         catch (error) { toast(`正则预设导入失败：${error.message}`, 'error'); }
     });
+    $('#worldbookFile').addEventListener('change', async event => {
+        const file = event.target.files[0]; event.target.value = '';
+        if (!file) return;
+        try { await importWorldbookFile(file); }
+        catch (error) { toast(`世界书导入失败：${error.message}`, 'error'); }
+    });
     $('#scriptUrl').addEventListener('keydown', event => {
         if (event.key === 'Enter') { event.preventDefault(); $('[data-action="import-script-url"]').click(); }
     });
@@ -6081,6 +6312,7 @@ function bindEvents() {
     $('#setupForm').addEventListener('submit', submitSetup);
     $('#modelRoutingForm').addEventListener('submit', event => { event.preventDefault(); saveModelRouting(); });
     $('#userProfileForm').addEventListener('submit', event => { event.preventDefault(); saveUserProfile(); });
+    $('#worldbookForm').addEventListener('submit', saveWorldbookForm);
     $('#setupShopSearch').addEventListener('input', renderSetupShop);
     $('#personalShopContent').addEventListener('input', event => { if (event.target.matches('[data-personal-shop-search]')) { personalShopSearch = event.target.value.trim().toLowerCase(); renderPersonalShop(); requestAnimationFrame(() => { const input = $('[data-personal-shop-search]'); input?.focus(); input?.setSelectionRange(input.value.length, input.value.length); }); } });
     $('#setupForm').elements.partnerEnabled.addEventListener('change', () => { renderPartnerState(); renderSetupShop(); });

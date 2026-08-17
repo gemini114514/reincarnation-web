@@ -1,6 +1,6 @@
 const DB_NAME = 'reincarnation-library';
-const DB_VERSION = 3;
-const STORES = ['presets', 'scripts', 'profiles', 'userProfiles', 'regexPresets'];
+const DB_VERSION = 4;
+const STORES = ['presets', 'scripts', 'profiles', 'userProfiles', 'regexPresets', 'worldbooks'];
 
 function openDb() {
     return new Promise((resolve, reject) => {
@@ -146,5 +146,41 @@ export function normalizeRegexPreset(raw, filename = '未命名正则预设') {
         importedAt: new Date().toISOString(),
         scripts: scripts.map(normalizeRegexScript),
         raw,
+    };
+}
+
+function splitKeys(value) {
+    if (Array.isArray(value)) return value.map(String).map(item => item.trim()).filter(Boolean);
+    return String(value || '').split(/[,，]/).map(item => item.trim()).filter(Boolean);
+}
+
+// Same V3 snake_case entry shape the 3.2.6 card uses inside
+// data.character_book.entries, so custom entries flow through the identical
+// worldbook activation, EJS rendering and depth-injection paths.
+export function normalizeWorldbookEntry(raw = {}) {
+    const depthRaw = raw.extensions?.depth;
+    const depth = Number(depthRaw);
+    const inChat = depthRaw !== null && depthRaw !== undefined && Number.isFinite(depth);
+    const position = raw.position === 'after_char' ? 'after_char' : 'before_char';
+    return {
+        id: Number.isFinite(Number(raw.id)) ? Number(raw.id) : Date.now() * 1000 + Math.floor(Math.random() * 1000),
+        keys: splitKeys(raw.keys),
+        secondary_keys: splitKeys(raw.secondary_keys),
+        comment: String(raw.comment || raw.name || '未命名条目'),
+        content: String(raw.content || ''),
+        constant: Boolean(raw.constant),
+        selective: Boolean(raw.selective),
+        insertion_order: Number.isFinite(Number(raw.insertion_order)) ? Number(raw.insertion_order) : 100,
+        enabled: raw.enabled !== false,
+        position,
+        use_regex: raw.use_regex !== false,
+        extensions: {
+            position: inChat ? 4 : (position === 'after_char' ? 1 : 0),
+            ...(inChat ? { depth } : {}),
+            role: Number(raw.extensions?.role) || 0,
+        },
+        origin: raw.origin || 'user',
+        createdAt: raw.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
     };
 }

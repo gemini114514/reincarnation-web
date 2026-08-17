@@ -216,6 +216,7 @@ export class CardRuntime extends EventTarget {
         this.promptContext = { lastUserMessage: '', lastMessage: '' };
         this.externalPrompts = new Map();
         this.events = new Map();
+        this.customWorldbook = [];
         this.installGlobals();
     }
 
@@ -225,6 +226,13 @@ export class CardRuntime extends EventTarget {
 
     setRegexPresets(presets = []) {
         this.externalRegexPresets = presets.filter(item => item?.enabled !== false);
+    }
+
+    // User-managed worldbook entries (世界书管理 view) ride along with the
+    // card's own character_book through the exact same activation, EJS
+    // rendering and depth-injection pipeline.
+    setCustomWorldbook(entries = []) {
+        this.customWorldbook = (Array.isArray(entries) ? entries : []).filter(item => item && item.enabled !== false);
     }
 
     injectPrompts(prompts = []) {
@@ -596,7 +604,7 @@ export class CardRuntime extends EventTarget {
     }
 
     activeWorldbook(messages) {
-        const entries = this.card.character_book?.entries ?? [];
+        const entries = [...(this.card.character_book?.entries ?? []), ...this.customWorldbook];
         const scanText = messages.slice(-12).map(item => item.content).join('\n').toLowerCase();
         return entries.filter(entry => {
             if (entry.enabled === false) return false;

@@ -313,3 +313,24 @@ html,body{min-width:0!important;overflow:hidden!important}
    surface as the original floating card. */
 .relation-entity-card{min-width:0}.relation-entity-subtitle{margin:3px 0 0!important;min-height:0!important;color:var(--muted)!important}.relation-vitals{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:12px 0}.relation-vitals span{padding:8px;border:1px solid var(--line);background:#171b15}.relation-vitals small{display:block;color:var(--muted);font:700 8px Rajdhani;letter-spacing:.12em}.relation-vitals b{display:block;color:var(--text);font:700 12px Rajdhani;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.relation-entity-summary{min-height:0!important;margin:8px 0!important}.relation-entity-facts{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin:10px 0;color:var(--muted);font-size:8px}.relation-entity-facts span{border-left:2px solid var(--line2);padding:5px 6px}.relation-entity-facts b{display:block;color:var(--text);font-size:9px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.relation-detail{border-top:1px solid var(--line);padding-top:9px;margin-top:9px}.relation-detail summary{cursor:pointer;list-style:none;color:#aeb8a9;font-size:9px;font-weight:700;display:flex;justify-content:space-between}.relation-detail summary::-webkit-details-marker{display:none}.relation-detail summary::before{content:'▾';color:var(--acid);margin-right:6px}.relation-detail:not([open]) summary::before{content:'▸'}.relation-detail summary span{color:var(--muted);font:700 9px Rajdhani}.relation-detail-list{display:flex;flex-direction:column;gap:4px;margin-top:8px}.relation-detail-list>div{display:grid;grid-template-columns:minmax(70px,.45fr) minmax(0,1fr);gap:8px;padding:6px 0;border-bottom:1px solid rgba(64,72,59,.55);font-size:9px}.relation-detail-list b{color:var(--text);font-weight:600}.relation-detail-list span{color:var(--muted);overflow-wrap:anywhere}.relation-empty-detail{font-size:9px;color:#65705f;margin:8px 0}.relation-attributes .final-attribute-panel{margin-top:8px;padding:10px}.relation-attributes .final-attribute-panel header{padding-bottom:7px}.relation-attributes .final-attribute-section{padding:9px 0}.relation-attributes .final-attribute-section h3{font-size:10px}.relation-attributes .final-attribute-grid{gap:3px}.relation-attributes .final-attribute-row{padding:5px 4px}.relation-attributes .final-attribute-row .k,.relation-attributes .final-attribute-row .v{font-size:8px}.relation-affection-list{list-style:none;margin:8px 0 0;padding:0}.relation-affection-list li{font-size:9px}
  .relation-long-text{margin-top:8px;color:var(--muted);font-size:9px;line-height:1.7}.relation-long-text p{margin:6px 0;padding-bottom:6px;border-bottom:1px solid rgba(64,72,59,.55)}.relation-long-text b{display:block;color:var(--text);font-size:8px;margin-bottom:2px}
+
+/* Extra-requirements / post-battle disposition note boxes in the combat
+   terminal.  Same surface before the battle (AI recognition preferences) and
+   after it (loot / aftermath instructions for the story model). */
+.combat-notes-field{display:flex;flex-direction:column;gap:5px;margin:2px 0 4px}
+.combat-notes-field label{color:var(--acid);font:700 8px Rajdhani;letter-spacing:.14em;text-transform:uppercase}
+.combat-notes-field textarea{width:100%;min-height:58px;resize:vertical;border:1px solid #35423a;border-radius:6px;background:#101510;color:#dbe7d4;font:10px/1.55 inherit;padding:8px 9px}
+.combat-notes-field textarea:focus{outline:none;border-color:var(--acid2);box-shadow:0 0 0 2px rgba(184,237,89,.12)}
+.combat-notes-field textarea::placeholder{color:#6d7a6d}
+.combat-disposition-field{margin:12px;padding:10px 11px;border:1px dashed #4a5c3c;border-radius:7px;background:#121812}
+
+/* Custom world book manager (酒馆世界书格式) */
+.worldbook-layout{display:grid;grid-template-columns:280px minmax(0,1fr);gap:12px;align-items:start;min-height:560px}
+.worldbook-layout .manager-sidebar{display:flex;flex-direction:column;min-height:560px}
+.worldbook-layout .manager-sidebar .manager-list{flex:1;max-height:none}
+.worldbook-editor{min-width:0;overflow:visible}
+.worldbook-editor .form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.worldbook-editor .form-grid label.wide{grid-column:1/-1}
+.worldbook-editor textarea[name="content"]{min-height:220px;resize:vertical;line-height:1.7}
+.worldbook-editor-foot{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px 12px;border-top:1px solid var(--line);margin-top:16px;padding-top:11px;color:var(--muted);font-size:8px}
+@media(max-width:760px){.worldbook-layout{grid-template-columns:1fr}.worldbook-layout .manager-sidebar{min-height:260px}.worldbook-editor .form-grid{grid-template-columns:1fr}}
