@@ -1,5 +1,10 @@
 # 更新日志
 
+## v0.1.3（2026-08-17）
+- 移除 `better-sqlite3` 原生依赖：`npm install` 不再需要 Visual Studio/node-gyp 编译环境
+- 战斗存档改为双后端：Node >= 22.13 使用 Node 内置 `node:sqlite`（仍写入 `data/combat.sqlite`），旧版 Node 自动回退到纯 JS 文件存档 `data/combat-store/`
+- 两个后端事件哈希链与重放完全一致（`npm run test:combat` 双后端验证通过）
+
 ## v0.1.1（2026-08-17）
 - 更新测试版本：验证 update 检测与自动更新流程
 - 版本号升至 v0.1.1

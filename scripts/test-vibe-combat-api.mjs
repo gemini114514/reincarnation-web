@@ -6,9 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { createCombatRouter } from '../combat/router.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.test', 'vibe-combat-api');
+fs.rmSync(path.join(root, 'data'), { recursive: true, force: true });
 fs.mkdirSync(root, { recursive: true });
-const db = path.join(root, 'data', 'combat.sqlite');
-for (const suffix of ['', '-wal', '-shm']) if (fs.existsSync(`${db}${suffix}`)) fs.rmSync(`${db}${suffix}`);
 const combat = createCombatRouter(root);
 const app = express(); app.use(express.json()); app.use('/api/combat', combat.router);
 const server = app.listen(0, '127.0.0.1');
@@ -24,7 +23,7 @@ try {
         { id: 'legacy-player', templateId: 'legacy-player', name: '旧主角', side: 'player', state: 'active', zoneId: 'front', hp: 20, maxHp: 20 },
         { id: 'legacy-enemy', templateId: 'legacy-enemy', name: '旧敌人', side: 'enemy', state: 'active', zoneId: 'front', hp: 20, maxHp: 20 },
     ], zones: [{ id: 'front', name: '前线' }] };
-    combat.repository.insertSession.run({ id: legacyState.id, storySessionId: legacyState.storySessionId, status: legacyState.status, version: legacyState.version, rulesetVersion: legacyState.rulesetVersion, seed: legacyState.seed, stateJson: JSON.stringify(legacyState), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    combat.repository.insertSessionRow({ id: legacyState.id, storySessionId: legacyState.storySessionId, status: legacyState.status, version: legacyState.version, rulesetVersion: legacyState.rulesetVersion, seed: legacyState.seed, stateJson: JSON.stringify(legacyState), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
     const legacyDebug = await request(`/${legacyState.id}/debug`);
     assert.equal(legacyDebug.response.status, 200);
     assert.equal(legacyDebug.body.raw.hasBattlefield, false);
@@ -57,18 +56,19 @@ try {
     const finalized = await request(`/${battle.id}/finalize`, { method: 'POST', body: JSON.stringify({ commandId: 'finalize', expectedVersion: action.body.version }) }); assert.equal(finalized.response.status, 200); assert.ok(finalized.body.finalizedAt);
 
     // Simulator sessions retain the exact same router/event API while never
-    // entering combat.sqlite. This is the boundary used by the web simulator.
-    const persistentCount = combat.repository.db.prepare('SELECT COUNT(*) AS count FROM combat_sessions').get().count;
+    // reaching the persistent combat store. This is the boundary used by the
+    // web simulator.
+    const persistentCount = combat.repository.sessionCount();
     const simulation = await request('/sessions', { method: 'POST', body: JSON.stringify({ transient: true, simulation: { source: 'combat-simulator', scenarioId: 'same-tier-horde' }, seed: 'simulation-api-seed', mode: 'manual', encounter: { title: 'Simulation API test', combatants: [{ id: 'sp', name: '模拟主角', side: 'player', controller: 'player', hp: 100, maxHp: 100, attack: 100, attackModifier: 100 }, { id: 'se', name: '模拟敌人', side: 'enemy', hp: 10, maxHp: 10, attackModifier: -100, abilities: [{ id: 'basic-attack', name: '远程基础攻击', type: 'physical', actionType: 'main', power: 0, modifier: 0, epCost: 0, minRangeMeters: 0, maxRangeMeters: 10, cooldownRounds: 0, targetCount: 1, aoe: false }] }] } }) });
     assert.equal(simulation.response.status, 201); assert.equal(simulation.body.transient, true); assert.equal(simulation.body.storySessionId, null);
     assert.ok(combat.repository.transient.has(simulation.body.id));
-    assert.equal(combat.repository.db.prepare('SELECT COUNT(*) AS count FROM combat_sessions').get().count, persistentCount, 'simulator wrote combat.sqlite');
+    assert.equal(combat.repository.sessionCount(), persistentCount, 'simulator wrote persistent combat store');
     const simStart = await request(`/${simulation.body.id}/start`, { method: 'POST', body: JSON.stringify({ commandId: 'simulation-start', expectedVersion: simulation.body.version }) });
     assert.equal(simStart.response.status, 200); assert.equal(simStart.body.status, 'paused');
     const simResult = await request(`/${simulation.body.id}/commands`, { method: 'POST', body: JSON.stringify({ commandId: 'simulation-hit', expectedVersion: simStart.body.version, type: 'attack', actorId: simStart.body.activeUnitId, abilityId: 'basic-attack', targetIds: ['se'] }) });
     assert.equal(simResult.response.status, 200); assert.equal(simResult.body.status, 'completed');
     const simReplay = await request(`/${simulation.body.id}/replay`); assert.equal(simReplay.response.status, 200); assert.ok(simReplay.body.events.length > 3);
-    assert.equal(combat.repository.db.prepare('SELECT COUNT(*) AS count FROM combat_sessions').get().count, persistentCount, 'simulator actions wrote combat.sqlite');
+    assert.equal(combat.repository.sessionCount(), persistentCount, 'simulator actions wrote persistent combat store');
 
     // Full API stealth simulation: 1 player against a 100-unit scattered
     // horde.  The player explicitly enters stealth through the generic

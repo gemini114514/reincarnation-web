@@ -3,7 +3,7 @@ dist/
 .test/
 *.log
 update.log
-data/*.sqlite*
+data/
 
 # Local-only artifacts (never commit / push)
 temp.txt

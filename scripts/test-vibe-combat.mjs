@@ -9,9 +9,8 @@ import { runScript, scriptHash, testScript } from '../combat/sandbox.js';
 import { applyDamage, checkOutcome, QUALITY_DC, targetCostMultiplier } from '../combat/rules.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '.test', 'vibe-combat');
+fs.rmSync(path.join(root, 'data'), { recursive: true, force: true });
 fs.mkdirSync(root, { recursive: true });
-const dbPath = path.join(root, 'data', 'combat.sqlite');
-for (const suffix of ['', '-wal', '-shm']) if (fs.existsSync(`${dbPath}${suffix}`)) fs.rmSync(`${dbPath}${suffix}`);
 const repository = new CombatRepository(root);
 const engine = new CombatEngine(repository);
 assert.equal(QUALITY_DC.SSS, 280); assert.equal(checkOutcome(98, 10, 999), 'miracle'); assert.equal(checkOutcome(2, 999, 1), 'disaster'); assert.equal(targetCostMultiplier(5), 3);

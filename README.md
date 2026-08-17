@@ -85,7 +85,7 @@ npm run test:shop
 - “AI 识别当前遭遇”使用战术终端中单独选择的模型连接与 AIRP 预设；也可用内置文本编辑器手工建立 `EncounterDraft`。
 - 纯手操逐单位停顿；半自动先预览策略及任一接管条件；全自动在本地推进到失能、安全暂停、200 回合上限或 10 回合僵局。
 - 所有能力脚本在 QuickJS/WASM 能力沙箱内运行，首次使用必须完成 100 组固定种子审查并显式批准。
-- 权威存档位于 `data/combat.sqlite`（SQLite WAL）；“查看重放”可读取完整哈希链，“诊断黑盒”导出会附带当前战斗重放。
+- 权威存档零原生依赖：Node >= 22.13 使用内置 `node:sqlite` 写入 `data/combat.sqlite`（SQLite WAL），旧版 Node 自动改用纯 JS 文件存档 `data/combat-store/`；`npm install` 无需 Visual Studio 等编译工具链。“查看重放”可读取完整哈希链，“诊断黑盒”导出会附带当前战斗重放。
 - 完整设计与协议见 [docs/VIBE_COMBAT_ENGINE_V1.md](docs/VIBE_COMBAT_ENGINE_V1.md)。
 
 战斗测试：`npm run test:combat`；浏览器战术控制台测试：`npm run test:combat-ui`。
