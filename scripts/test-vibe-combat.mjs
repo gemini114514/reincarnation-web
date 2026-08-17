@@ -179,6 +179,32 @@ let auditory = reload(engine.create(payload('auditory-source', [
 engine.emitNoise(auditory, auditory.combatants.find(unit => unit.id === 'player'), { reason: 'test_auditory', radiusMeters: 40 });
 assert.equal(auditory.intel.knowledge.enemy.player.source, 'auditory'); commit(auditory);
 
+// Turning away does not erase a target that has not taken its turn yet. Once
+// that target acts, the next visual refresh may downgrade the stale contact.
+let turnVisibility = reload(engine.create(payload('turn-visibility', [
+    baseUnit('player', { position: { x: 0, y: 0 }, facingDegrees: 0, visionMeters: 30, initiativeDC: 1000 }),
+    baseUnit('enemy', { position: { x: 10, y: 0 }, facingDegrees: 180, initiativeDC: -100 }),
+], 'manual')).id);
+await engine.start(turnVisibility);
+const turnObserver = turnVisibility.combatants.find(unit => unit.id === 'player');
+const turnTarget = turnVisibility.combatants.find(unit => unit.id === 'enemy');
+engine.updateKnowledge(turnVisibility, turnObserver, turnTarget, { source: 'visual', reason: 'turn_visibility_test', force: true });
+turnObserver.facingDegrees = 180;
+engine.refreshIntelligence(turnVisibility, { reason: 'turn_visibility_refresh', affectedIds: [turnObserver.id] });
+assert.equal(turnVisibility.intel.knowledge.player.enemy.awareness, 'tracking');
+turnVisibility.cursor = 2;
+engine.refreshIntelligence(turnVisibility, { reason: 'turn_visibility_after_target_turn', affectedIds: [turnObserver.id] });
+assert.equal(turnVisibility.intel.knowledge.player.enemy.awareness, 'suspicious');
+
+// Every unit has a two-meter forced-visibility radius, regardless of facing.
+turnTarget.position = { x: 1.5, y: 0 };
+turnVisibility.cursor = 0;
+engine.updateKnowledge(turnVisibility, turnObserver, turnTarget, { source: 'visual', reason: 'forced_visibility_test', force: true });
+turnObserver.facingDegrees = 180;
+engine.refreshIntelligence(turnVisibility, { reason: 'forced_visibility_refresh', affectedIds: [turnObserver.id] });
+assert.equal(turnVisibility.intel.knowledge.player.enemy.awareness, 'tracking');
+commit(turnVisibility);
+
 let intel = reload(engine.create(payload('intel-source', [
     baseUnit('player', { position: { x: -20, y: 0 }, visionMeters: 1, intelProfile: { presence: 'concealed', stealthBonus: 100, perceptionBonus: 0, commandBonus: 0, hearingMeters: 8, intelligenceRangeMeters: 0, intelligenceBonus: 0, movementNoiseMeters: 3, attackNoiseMeters: 18 } }),
     baseUnit('enemy', { position: { x: 10, y: 0 }, visionMeters: 1, attributes: { strengthModifier: 0, dexterityModifier: 0, constitutionModifier: 0, spiritModifier: 0, charismaModifier: 0 }, intelProfile: { presence: 'obvious', stealthBonus: 0, perceptionBonus: 0, commandBonus: 0, hearingMeters: 8, intelligenceRangeMeters: 45, intelligenceBonus: 1000, movementNoiseMeters: 12, attackNoiseMeters: 32 } }),

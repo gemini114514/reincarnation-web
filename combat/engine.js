@@ -417,6 +417,9 @@ export class CombatEngine {
     loseVisualContact(state, observer, target, reason) {
         const entry = this.knowledge(state, observer.id, target.id);
         if (!entry || entry.source !== 'visual' || !this.isTracking(entry) || this.inVisualField(observer, target)) return;
+        // Turning away cannot erase a confirmed target before that target has
+        // had its own turn in the current round.
+        if (entry.round === state.round && !this.hasActedThisRound(state, target)) return;
         entry.awareness = 'suspicious'; entry.canTarget = false; entry.lostAtRound = state.round;
         entry.expiresAtRound = state.round + 1 + Math.max(0, Number(observer.attributes?.spiritModifier || 0));
         this.event(state, 'tracking_lost', { observerId: observer.id, targetId: target.id, source: 'visual', reason, lastKnownPosition: entry.position, expiresAtRound: entry.expiresAtRound });
@@ -678,6 +681,11 @@ export class CombatEngine {
             state.cursor += 1;
         }
         state.activeUnitId = null; return null;
+    }
+
+    hasActedThisRound(state, unit) {
+        const initiativeIndex = state.initiative?.findIndex(entry => entry.unitId === unit.id) ?? -1;
+        return initiativeIndex >= 0 && initiativeIndex < Number(state.cursor || 0);
     }
 
     legalActions(state, actor) {
