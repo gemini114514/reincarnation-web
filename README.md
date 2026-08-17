@@ -89,3 +89,9 @@ npm run test:shop
 - 完整设计与协议见 [docs/VIBE_COMBAT_ENGINE_V1.md](docs/VIBE_COMBAT_ENGINE_V1.md)。
 
 战斗测试：`npm run test:combat`；浏览器战术控制台测试：`npm run test:combat-ui`。
+
+## 许可协议
+
+本项目采用 [CC BY-NC-SA 4.0](LICENSE) 许可协议发布：允许署名共享与改编，禁止商业用途，改编作品须以相同方式共享。
+
+许可选择与署名方式参考自 [gemini114514 / Comic Orb](https://github.com/gemini114514/comic-orb)（同为 CC BY-NC-SA 4.0）。

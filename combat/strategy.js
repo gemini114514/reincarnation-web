@@ -20,7 +20,12 @@ export function compileStrategy(text = '', input = {}) {
         preserveEpPercent: Number.isFinite(ep) ? ep : 20,
         allowItems: !/(?:不用|禁止).*(?:道具|物品)/.test(source),
         allowFriendlyFire: /允许友伤/.test(source),
-        retreat: /撤退|逃跑/.test(source),
+        // “拉扯/风筝/边打边退” is the player-facing name for the same
+        // local retreat policy.  Keep the persisted field as `retreat` so
+        // older strategy payloads remain compatible.
+        retreat: /撤退|逃跑|拉扯|风筝|保持距离|边打边退|游击|分割|逐个击破/.test(source),
+        stealth: /潜行|隐蔽|隐身|偷袭|游击|分割/.test(source),
+        guerrilla: /游击|分割|切割|诱导|逐个击破|避免主群/.test(source),
         reactionPolicy: /保留反应|不反击/.test(source) ? 'conserve' : 'auto',
         takeoverTriggers: Array.isArray(input.takeoverTriggers) && input.takeoverTriggers.length ? input.takeoverTriggers : triggers.length ? triggers : DEFAULT_TRIGGERS,
         compiledAt: new Date().toISOString(),
@@ -29,7 +34,7 @@ export function compileStrategy(text = '', input = {}) {
     const validPriorities = ['nearest', 'weakest', 'boss'];
     if (Array.isArray(ai.priorities)) locallyCompiled.priorities = [...new Set(ai.priorities.filter(item => validPriorities.includes(item)))].concat(validPriorities).slice(0, 3);
     if (Number.isFinite(Number(ai.preserveEpPercent))) locallyCompiled.preserveEpPercent = Math.max(0, Math.min(100, Number(ai.preserveEpPercent)));
-    for (const key of ['allowItems', 'allowFriendlyFire', 'retreat']) if (typeof ai[key] === 'boolean') locallyCompiled[key] = ai[key];
+    for (const key of ['allowItems', 'allowFriendlyFire', 'retreat', 'stealth', 'guerrilla']) if (typeof ai[key] === 'boolean') locallyCompiled[key] = ai[key];
     if (['auto', 'conserve'].includes(ai.reactionPolicy)) locallyCompiled.reactionPolicy = ai.reactionPolicy;
     if (Array.isArray(ai.takeoverTriggers)) {
         const fields = new Set(['playerHpPercent', 'playerEpPercent', 'enemyDefeatedPercent', 'allyDying', 'bossPhaseChanged', 'round', 'noLegalAction']);

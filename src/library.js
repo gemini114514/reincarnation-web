@@ -32,12 +32,47 @@ export const library = {
 
 function activeOrder(raw) {
     const orders = raw.prompt_order ?? [];
-    return orders.find(item => item.character_id === 100001)?.order ?? orders.at(-1)?.order ?? [];
+    const selected = orders.find(item => String(item.character_id) === '100001') ?? orders.at(-1);
+    return selected?.order ?? [];
+}
+
+function normalizeRegexScript(script = {}, index = 0) {
+    return {
+        id: script.id || crypto.randomUUID(),
+        scriptName: script.scriptName || script.script_name || script.name || `正则 ${index + 1}`,
+        disabled: Boolean(script.disabled),
+        runOnEdit: Boolean(script.runOnEdit ?? script.run_on_edit),
+        findRegex: script.findRegex || script.find_regex || script.regex || '',
+        replaceString: script.replaceString ?? script.replace_string ?? script.replace ?? '',
+        trimStrings: script.trimStrings || script.trim_strings || [],
+        placement: script.placement || [1, 2],
+        substituteRegex: script.substituteRegex ?? script.substitute_regex ?? 0,
+        minDepth: script.minDepth ?? script.min_depth ?? null,
+        maxDepth: script.maxDepth ?? script.max_depth ?? null,
+        markdownOnly: Boolean(script.markdownOnly ?? script.markdown_only),
+        promptOnly: Boolean(script.promptOnly ?? script.prompt_only),
+    };
+}
+
+function presetRegexScripts(raw) {
+    const extensions = raw?.extensions || {};
+    const nested = extensions.SPreset?.RegexBinding?.regexes;
+    const scripts = Array.isArray(extensions.regex_scripts)
+        ? extensions.regex_scripts
+        : Array.isArray(nested) ? nested : [];
+    return scripts.map(normalizeRegexScript);
 }
 
 export function normalizePreset(raw, filename = '未命名预设') {
     if (!Array.isArray(raw?.prompts)) throw new Error('不是可识别的 SillyTavern OAI/AIRP 预设：缺少 prompts');
     const order = activeOrder(raw);
+    // SillyTavern treats an existing character prompt order as an allow-list.
+    // Entries that are enabled in the raw `prompts` array but are not present
+    // in the selected order are not sent.  Falling back to prompt.enabled here
+    // silently adds stale/system entries and is one of the most common causes
+    // of an independent request drifting from Tavern.
+    const hasExplicitOrder = Array.isArray(raw.prompt_order) && raw.prompt_order.length > 0
+        && Array.isArray((raw.prompt_order.find(item => String(item.character_id) === '100001') ?? raw.prompt_order.at(-1))?.order);
     const enabledMap = new Map(order.map((item, index) => [item.identifier, { enabled: item.enabled !== false, index }]));
     const prompts = raw.prompts.map((prompt, sourceIndex) => ({
         identifier: prompt.identifier || crypto.randomUUID(),
@@ -45,7 +80,9 @@ export function normalizePreset(raw, filename = '未命名预设') {
         role: ['system', 'user', 'assistant'].includes(prompt.role) ? prompt.role : 'system',
         content: prompt.content || '',
         marker: Boolean(prompt.marker),
-        enabled: enabledMap.has(prompt.identifier) ? enabledMap.get(prompt.identifier).enabled : prompt.enabled !== false,
+        enabled: hasExplicitOrder
+            ? Boolean(enabledMap.get(prompt.identifier)?.enabled)
+            : prompt.enabled !== false,
         order: enabledMap.get(prompt.identifier)?.index ?? 10000 + sourceIndex,
         injectionPosition: prompt.injection_position ?? 0,
         injectionDepth: prompt.injection_depth ?? 4,
@@ -68,6 +105,12 @@ export function normalizePreset(raw, filename = '未命名预设') {
         },
         assistantPrefill: raw.assistant_prefill || '',
         squashSystemMessages: Boolean(raw.squash_system_messages),
+        promptOrderAligned: true,
+        // Tavern stores preset-bound regexes in extensions.regex_scripts. Keep
+        // a normalized copy so the independent runtime can execute them in
+        // both prompt and display passes instead of merely preserving them in
+        // raw metadata.
+        regexScripts: presetRegexScripts(raw),
         extensions: raw.extensions || {},
         raw,
     };
@@ -101,21 +144,7 @@ export function normalizeRegexPreset(raw, filename = '未命名正则预设') {
         name: raw?.name || filename.replace(/\.json$/i, ''),
         enabled: raw?.enabled !== false,
         importedAt: new Date().toISOString(),
-        scripts: scripts.map((script, index) => ({
-            id: script.id || crypto.randomUUID(),
-            scriptName: script.scriptName || script.script_name || script.name || `正则 ${index + 1}`,
-            disabled: Boolean(script.disabled),
-            runOnEdit: Boolean(script.runOnEdit ?? script.run_on_edit),
-            findRegex: script.findRegex || script.find_regex || script.regex || '',
-            replaceString: script.replaceString ?? script.replace_string ?? script.replace ?? '',
-            trimStrings: script.trimStrings || script.trim_strings || [],
-            placement: script.placement || [1, 2],
-            substituteRegex: script.substituteRegex ?? script.substitute_regex ?? 0,
-            minDepth: script.minDepth ?? script.min_depth ?? null,
-            maxDepth: script.maxDepth ?? script.max_depth ?? null,
-            markdownOnly: Boolean(script.markdownOnly ?? script.markdown_only),
-            promptOnly: Boolean(script.promptOnly ?? script.prompt_only),
-        })),
+        scripts: scripts.map(normalizeRegexScript),
         raw,
     };
 }

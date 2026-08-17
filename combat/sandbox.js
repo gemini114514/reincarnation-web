@@ -37,7 +37,7 @@ export async function runScript(source, input) {
               damage:(targetId,amount,damageType="physical")=>emit("damage",{targetId:String(targetId),amount:Number(amount),damageType:String(damageType)}),
               heal:(targetId,amount)=>emit("heal",{targetId:String(targetId),amount:Number(amount)}),
               status:(targetId,status,duration=1)=>emit("status",{targetId:String(targetId),status:String(status),duration:Number(duration)}),
-              move:(targetId,zoneId)=>emit("move",{targetId:String(targetId),zoneId:String(zoneId)}),
+              move:(targetId,x,y)=>emit("move",{targetId:String(targetId),position:{x:Number(x),y:Number(y)}}),
               resource:(targetId,resource,delta)=>emit("resource",{targetId:String(targetId),resource:String(resource),delta:Number(delta)}),
               summon:(templateId,zoneId,count=1)=>emit("summon",{templateId:String(templateId),zoneId:String(zoneId),count:Number(count)}),
               dispel:(targetId,status)=>emit("dispel",{targetId:String(targetId),status:String(status)}),
@@ -67,4 +67,3 @@ export async function testScript(source, ability = {}) {
     }
     return { ...inspection, tests: 100, passed: failures.length === 0, failures };
 }
-

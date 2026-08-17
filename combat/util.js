@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 
-export const RULESET_VERSION = 'vibe-combat-v1/rules-v3.2.6';
+export const RULESET_VERSION = 'vibe-combat-v2-guerrilla/rules-v3.2.6';
 
 export function canonical(value) {
     if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
@@ -55,4 +55,3 @@ export class DeterministicRng {
 }
 
 export function deepClone(value) { return structuredClone(value); }
-

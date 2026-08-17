@@ -4,8 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readCharacterCard } from './lib/card.js';
 import vm from 'node:vm';
+import YAML from 'yaml';
 import { createCombatRouter } from './combat/router.js';
-import { generateShopDraft, lifeLevelRoman, mergeApiCatalog, normalizeLifeLevel, normalizeTarget, shopModelPrompt } from './shop/engine.js';
+import { generateShopDraft, lifeLevelRoman, mergeApiCatalog, normalizeCatalog, normalizeLifeLevel, normalizeTarget, shopModelPrompt, tavernShopUserPrompt } from './shop/engine.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const cardPath = path.join(root, 'card', 'V3.2.6.png');
@@ -164,6 +165,16 @@ function parseJsonObject(text) {
     }
 }
 
+function parseShopModelOutput(text) {
+    const raw = String(text || '').trim().replace(/^```(?:ya?ml|json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    if (!raw) throw new Error('商城模型未返回内容');
+    try { return parseJsonObject(raw); } catch (_jsonError) {
+        const parsed = YAML.parse(raw);
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error('模型返回的商城内容不是对象');
+        return parsed;
+    }
+}
+
 app.post('/api/models', async (req, res) => {
     try {
         const protocol = req.body.protocol || 'openai-chat';
@@ -193,10 +204,50 @@ app.post('/api/models', async (req, res) => {
     }
 });
 
+function composeShopPromptMessages({ tavernShopSystem, prompt, promptOverride = '', promptModules = {} } = {}) {
+    const modules = promptModules && typeof promptModules === 'object' ? promptModules : {};
+    const preset = modules.preset && typeof modules.preset === 'object' ? modules.preset : {};
+    const rules = modules.rules && typeof modules.rules === 'object' ? modules.rules : {};
+    const work = modules.work && typeof modules.work === 'object' ? modules.work : {};
+    const messages = [];
+    if (preset.enabled !== false && String(preset.text || '').trim()) messages.push({ role: preset.role === 'assistant' ? 'assistant' : preset.role === 'user' ? 'user' : 'system', content: String(preset.text).trim() });
+    if (rules.enabled !== false) {
+        const rulesText = String(promptOverride || rules.text || tavernShopSystem || '你是严格的 JSON 商品文案填充器。只返回要求的 JSON，不要 markdown。').trim();
+        if (rulesText) messages.push({ role: rules.role === 'user' ? 'user' : 'system', content: rulesText });
+    }
+    if (work.enabled !== false) {
+        const workText = String(work.text || prompt || '').trim();
+        if (workText) messages.push({ role: work.role === 'system' ? 'system' : work.role === 'assistant' ? 'assistant' : 'user', content: workText });
+    }
+    return messages;
+}
+
+app.post('/api/shop/prompt-preview', (req, res) => {
+    try {
+        const body = req.body || {};
+        const toolArgs = body.args && typeof body.args === 'object' ? body.args : {};
+        const tavernShopSystem = String(body.tavernShopSystem || '').trim();
+        const characterName = String(body.characterName || body.playerName || '轮回者').trim().slice(0, 80) || '轮回者';
+        const playerLevel = normalizeLifeLevel(body.playerLifeLevel || body.playerLevel || body.level || toolArgs.生命层级 || toolArgs.玩家等级 || body.hero?.层级 || body.hero?.位阶 || body.hero?.等级 || 1);
+        const target = body.target && typeof body.target === 'object' ? body.target : {};
+        const autonomousTarget = Boolean(target.autonomous || target.modelDecides || target.categories?.includes('all'));
+        const slotPreferences = Array.isArray(body.slotPreferences) && body.slotPreferences.length ? body.slotPreferences : (Array.isArray(toolArgs.槽位偏好) ? toolArgs.槽位偏好 : (Array.isArray(target.slotPreferences) ? target.slotPreferences : []));
+        const draft = generateShopDraft({ playerLevel, slotPreferences, target: autonomousTarget ? { ...target, categories: ['all'] } : target, seed: body.seed || `${characterName}:${playerLevel}:${JSON.stringify(target)}`, hero: body.hero || {}, currentCatalog: body.currentCatalog || {} });
+        const prompt = tavernShopSystem
+            ? tavernShopUserPrompt({ playerLevel: draft.playerLevel, characterName, hero: body.hero || {}, query: draft.target.query })
+            : shopModelPrompt({ draft: draft.generated, target: autonomousTarget ? { ...draft.target, autonomous: true } : draft.target, playerLevel: draft.playerLevel, characterName, query: draft.target.query });
+        const override = String(body.promptOverride || '').trim();
+        const messages = composeShopPromptMessages({ tavernShopSystem, prompt, promptOverride: override, promptModules: body.promptModules });
+        res.json({ ok: true, mode: tavernShopSystem ? 'tavern-v3.2.6-reference' : 'legacy-draft-filler', messages, draft: { target: draft.target, playerLevel: draft.playerLevel, playerLifeLevel: draft.playerLifeLevel, generated: draft.generated, rulesetVersion: draft.rulesetVersion, qualityPolicy: draft.qualityPolicy, priceRanges: draft.priceRanges }, overrideApplied: Boolean(override) });
+    } catch (error) { res.status(400).json({ ok: false, error: error.message }); }
+});
+
 app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
     const body = req.body || {};
     const toolArgs = body.args && typeof body.args === 'object' ? body.args : {};
     const connection = body.connection && typeof body.connection === 'object' ? body.connection : body;
+    const tavernShopSystem = String(body.tavernShopSystem || '').trim();
+    const tavernCompatible = tavernShopSystem.length > 0;
     const characterName = String(body.characterName || body.playerName || '轮回者').trim().slice(0, 80) || '轮回者';
     const shopController = new AbortController();
     const shopTimeout = setTimeout(() => shopController.abort(new Error('商城模型请求超过 300 秒')), 300000);
@@ -222,9 +273,19 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
         const model = String(connection.model || '').trim();
         if (model && connection.baseUrl) {
             try {
-                const prompt = shopModelPrompt({ draft: draft.generated, target: autonomousTarget ? { ...draft.target, autonomous: true } : draft.target, playerLevel: draft.playerLevel, characterName, query: draft.target.query });
-                const presetContext = Array.isArray(body.preset?.prompts) ? body.preset.prompts.filter(item => item && item.content).map(item => `[${item.role || 'system'}] ${item.content}`).join('\n\n').slice(0, 16000) : '';
-                apiTrace = { model, protocol: connection.protocol || 'openai-chat', prompt, presetChars: presetContext.length };
+                const prompt = tavernCompatible
+                    ? tavernShopUserPrompt({ playerLevel: draft.playerLevel, characterName, hero: body.hero || {}, query: draft.target.query })
+                    : shopModelPrompt({ draft: draft.generated, target: autonomousTarget ? { ...draft.target, autonomous: true } : draft.target, playerLevel: draft.playerLevel, characterName, query: draft.target.query });
+                const override = String(body.promptOverride || '').trim();
+                const upstreamMessages = composeShopPromptMessages({ tavernShopSystem: tavernShopSystem || '你是严格的 JSON 商品文案填充器。只返回要求的 JSON，不要 markdown。', prompt, promptOverride: override, promptModules: body.promptModules });
+                apiTrace = {
+                    model,
+                    protocol: connection.protocol || 'openai-chat',
+                    mode: tavernCompatible ? 'tavern-v3.2.6-reference' : 'legacy-draft-filler',
+                    prompt,
+                    system: upstreamMessages[0].content,
+                    messages: upstreamMessages,
+                };
                 const upstream = await fetch(`http://127.0.0.1:${port}/api/chat`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -232,10 +293,7 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
                         ...connection,
                         stream: false,
                         maxTokens: Math.max(30000, Number(connection.maxTokens) || 32768),
-                        messages: [
-                            { role: 'system', content: `你是严格的 JSON 商品文案填充器。只返回要求的 JSON，不要 markdown。${presetContext ? `\n\n以下是当前 AIRP 预设的风格约束，只影响文案风格，不得改变数值：\n${presetContext}` : ''}` },
-                            { role: 'user', content: prompt },
-                        ],
+                        messages: upstreamMessages,
                     }),
                     signal: shopController.signal,
                 });
@@ -243,19 +301,28 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
                 if (!upstream.ok) throw new Error(responseBody.error?.message || responseBody.error || `模型请求失败（${upstream.status}）`);
                 const rawContent = responseBody.choices?.[0]?.message?.content || responseBody.output_text || '';
                 const content = Array.isArray(rawContent) ? rawContent.map(item => typeof item === 'string' ? item : item?.text || '').join('') : rawContent;
-                const responseCatalog = parseJsonObject(content);
+                const responseCatalog = tavernCompatible ? parseShopModelOutput(content) : parseJsonObject(content);
                 apiTrace.responseText = String(content).slice(0, 50000);
                 apiTrace.response = responseCatalog;
-                const modelSelection = responseCatalog.刷新目标 || responseCatalog.refreshTarget || responseCatalog.target || {};
-                const modelTarget = autonomousTarget ? normalizeTarget({ ...modelSelection, categories: modelSelection.categories || modelSelection.分类 || modelSelection.category || modelSelection.categories列表 }) : draft.target;
-                const selectedTarget = autonomousTarget && modelTarget.categories.length ? modelTarget : draft.target;
-                const targetChanged = selectedTarget.categories.join(',') !== draft.target.categories.join(',')
-                    || selectedTarget.slots.join(',') !== draft.target.slots.join(',')
-                    || selectedTarget.qualityPreferences.join(',') !== draft.target.qualityPreferences.join(',');
-                const selectedDraft = autonomousTarget && targetChanged ? generateShopDraft({ playerLevel, slotPreferences: selectedTarget.slots, target: selectedTarget, seed: body.seed, hero: body.hero || {}, currentCatalog: body.currentCatalog || {} }) : draft;
-                catalog = mergeApiCatalog(selectedDraft.catalog, responseCatalog, selectedTarget);
-                effectiveDraft = selectedDraft;
-                effectiveDraft.target = selectedTarget;
+                if (tavernCompatible) {
+                    // The original forge_shop model generates the entire YAML
+                    // catalogue.  Preserve that response verbatim apart from
+                    // structural normalization for the web UI; do not repair
+                    // prices, tiers, dice, or effects locally.
+                    catalog = normalizeCatalog(responseCatalog);
+                    effectiveDraft.target = draft.target;
+                } else {
+                    const modelSelection = responseCatalog.刷新目标 || responseCatalog.refreshTarget || responseCatalog.target || {};
+                    const modelTarget = autonomousTarget ? normalizeTarget({ ...modelSelection, categories: modelSelection.categories || modelSelection.分类 || modelSelection.category || modelSelection.categories列表 }) : draft.target;
+                    const selectedTarget = autonomousTarget && modelTarget.categories.length ? modelTarget : draft.target;
+                    const targetChanged = selectedTarget.categories.join(',') !== draft.target.categories.join(',')
+                        || selectedTarget.slots.join(',') !== draft.target.slots.join(',')
+                        || selectedTarget.qualityPreferences.join(',') !== draft.target.qualityPreferences.join(',');
+                    const selectedDraft = autonomousTarget && targetChanged ? generateShopDraft({ playerLevel, slotPreferences: selectedTarget.slots, target: selectedTarget, seed: body.seed, hero: body.hero || {}, currentCatalog: body.currentCatalog || {} }) : draft;
+                    catalog = mergeApiCatalog(selectedDraft.catalog, responseCatalog, selectedTarget);
+                    effectiveDraft = selectedDraft;
+                    effectiveDraft.target = selectedTarget;
+                }
                 source = 'api';
                 apiTrace.usage = responseBody.usage || responseBody.usageMetadata || null;
             } catch (error) {
@@ -266,9 +333,9 @@ app.post(['/api/shop/refresh', '/api/shop/forge'], async (req, res) => {
             warnings.push('未配置可用 API，已使用本地规则生成商品数值与占位文案');
         }
         const member = {};
-        for (const key of ['血统列表', '技能列表', '装备列表', '道具列表', '升级列表']) member[key] = catalog[key];
+        for (const key of ['血统列表', '形态列表', '技能列表', '装备列表', '道具列表', '升级列表']) member[key] = catalog[key];
         catalog.成员商库 = { ...(catalog.成员商库 || {}), [characterName]: member };
-        const shopItems = ['升级列表', '技能列表', '血统列表', '装备列表', '道具列表'].flatMap(key => catalog[key] || []);
+        const shopItems = ['升级列表', '形态列表', '技能列表', '血统列表', '装备列表', '道具列表'].flatMap(key => catalog[key] || []);
         res.json({
             ok: true,
             source,
@@ -365,7 +432,10 @@ app.post('/api/chat', async (req, res) => {
                 'Content-Type': 'application/json',
                 ...providerHeaders(apiKey, extraHeaders),
             },
-            body: JSON.stringify({ model, messages: assistantPrefill ? [...messages, { role: 'assistant', content: assistantPrefill }] : messages, temperature, top_p: topP, max_tokens: maxTokens, frequency_penalty: frequencyPenalty, presence_penalty: presencePenalty, ...(reasoningEffort && reasoningEffort !== 'auto' ? { reasoning_effort: reasoningEffort } : {}), stream, ...(stream ? { stream_options: { include_usage: true } } : {}), ...extraBody }),
+            // Keep the wire body compatible with Tavern's node-fetch request.
+            // Usage metadata is optional; adding stream_options changes the
+            // request shape and is not needed for prompt/generation parity.
+            body: JSON.stringify({ model, messages: assistantPrefill ? [...messages, { role: 'assistant', content: assistantPrefill }] : messages, temperature, top_p: topP, max_tokens: maxTokens, frequency_penalty: frequencyPenalty, presence_penalty: presencePenalty, ...(reasoningEffort && reasoningEffort !== 'auto' ? { reasoning_effort: reasoningEffort } : {}), stream, ...extraBody }),
             signal: upstreamController.signal,
         });
         armUpstreamTimeout('接收响应');
@@ -404,8 +474,11 @@ if (!process.argv.includes('--api-only')) {
         console.error('尚未构建前端，请先运行 npm run build');
         process.exit(1);
     }
-    app.use(express.static(dist));
-    app.use((_req, res) => res.sendFile(path.join(dist, 'index.html')));
+    // The standalone client is frequently rebuilt while a local browser tab
+    // remains open. Do not let Chromium keep an old index or hashed bundle
+    // after a rebuild; the combat canvas must always match the source/tests.
+    app.use(express.static(dist, { setHeaders: response => response.setHeader('Cache-Control', 'no-store, max-age=0') }));
+    app.use((_req, res) => { res.setHeader('Cache-Control', 'no-store, max-age=0'); res.sendFile(path.join(dist, 'index.html')); });
 }
 
 app.listen(port, '127.0.0.1', () => {

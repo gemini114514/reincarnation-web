@@ -2,13 +2,15 @@ import { DeterministicRng, deepClone, seed256 } from '../combat/util.js';
 
 // This module is a server-safe port of the embedded V3.2.6 card rules.
 // The card has nine life tiers (Roman Ⅰ–Ⅸ), not a 1–50 player-level scale.
-export const SHOP_RULESET_VERSION = 'v3.2.6-card-independent-life-quality';
+// This conversion is scoped to the shop's vision gate only.  It must never be
+// reused by the narrative/MVU layer as a general life-tier equivalence.
+export const SHOP_RULESET_VERSION = 'v3.2.6-card-shop-vision';
 export const QUALITY_ORDER = ['F', 'E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
 export const LIFE_LEVEL_ROMAN = ['Ⅰ', 'Ⅱ', 'Ⅲ', 'Ⅳ', 'Ⅴ', 'Ⅵ', 'Ⅶ', 'Ⅷ', 'Ⅸ'];
-// The opening card stocks D/E/F goods regardless of the protagonist's life
-// tier.  A model may request another quality explicitly through
-// target.qualityPreferences; there is deliberately no life-tier lookup here.
-export const CARD_SHOP_DEFAULT_QUALITY_SEQUENCE = ['D', 'E', 'F'];
+// V3.2.6 forge_shop: Ⅰ=F, Ⅱ=E … for *商城视野* only.  The shop may show at
+// most one further quality as temptation; it never changes the character's
+// actual Ⅰ–Ⅸ life-tier data.
+export const CARD_SHOP_DEFAULT_QUALITY_SEQUENCE = ['F'];
 // These are copied from the card's embedded auxiliary calculator/worldbook,
 // not from the legacy AIRPcard/数值.txt 1–50 forge helper.
 export const CARD_LIFE_TIER_RANGES = {
@@ -58,6 +60,7 @@ const RULES = {
 const SLOT_TABLE = [{ 子类型: '武器', 槽位: '武器' }, { 子类型: '防具', 槽位: '盾', 防具类型: '盾牌防具' }, { 子类型: '防具', 槽位: '铠甲', 防具类型: '身体防具' }, { 子类型: '防具', 槽位: '头盔', 防具类型: '头部防具' }, { 子类型: '防具', 槽位: '腿甲', 防具类型: '腿部防具' }, { 子类型: '饰品', 槽位: '腰带' }, { 子类型: '饰品', 槽位: '鞋子' }, { 子类型: '饰品', 槽位: '饰品' }];
 const CATEGORY_KEYS = { bloodline: '血统列表', skill: '技能列表', equipment: '装备列表', item: '道具列表', upgrade: '升级列表' };
 const CATEGORY_ALIASES = { 血统: 'bloodline', 血统列表: 'bloodline', 技能: 'skill', 技能列表: 'skill', 装备: 'equipment', 装备列表: 'equipment', 道具: 'item', 道具列表: 'item', 升级: 'upgrade', 升级列表: 'upgrade' };
+const CATALOG_LIST_KEYS = [...Object.values(CATEGORY_KEYS), '形态列表'];
 const VALID_SLOTS = ['武器', '法术武器', '铠甲', '头盔', '腿甲', '鞋子', '盾', '饰品', '腰带'];
 const WEAPON_PROFILES = [{ min: 'F', type: '剑/刀/斧/锤/枪/拳套', mode: '近战' }, { min: 'F', type: '飞刀/飞镖/短弓/投石索', mode: '投掷' }, { min: 'F', type: '旧式手枪/袖珍枪/粗制火铳', mode: '低威力远程' }, { min: 'E', type: '长弓/手弩/火铳/左轮手枪', mode: '远程' }, { min: 'D', type: '强弩/步枪/霰弹枪/符枪/飞剑匣', mode: '远程' }, { min: 'C', type: '狙击枪/重弩/榴弹发射器', mode: '压制' }, { min: 'B', type: '电磁步枪/等离子枪/浮游刃群', mode: '科技武装' }, { min: 'A', type: '因果线枪/空间折叠炮/梦境武器', mode: '概念武装' }];
 const ARTIFACT_PROFILES = [{ min: 'F', type: '符箓/铃/镜/珠', mode: '短法术' }, { min: 'E', type: '法杖/法书/阵盘', mode: '法术' }, { min: 'D', type: '剑匣/灵装/魔导器', mode: '术具' }, { min: 'C', type: '高阶阵盘/灵能炮杖', mode: '术式' }, { min: 'B', type: '星轨权杖/虚数终端', mode: '科技法术' }, { min: 'A', type: '因果书页/空间权杖', mode: '概念术具' }];
@@ -90,6 +93,8 @@ const levelRule = (category, qualityValue) => {
 };
 const priceRangeForQuality = quality => [...(CARD_PRICE_RANGES[normalizeQualityLetter(quality)] || CARD_PRICE_RANGES.F)];
 const nextQuality = quality => QUALITY_ORDER[Math.min(QUALITY_ORDER.indexOf(normalizeQualityLetter(quality)) + 1, QUALITY_ORDER.length - 1)];
+export const shopVisionQuality = lifeLevel => QUALITY_ORDER[Math.min(normalizeLifeLevel(lifeLevel) - 1, QUALITY_ORDER.length - 1)];
+const qualityAtMost = (quality, maximum) => QUALITY_ORDER[Math.min(QUALITY_ORDER.indexOf(normalizeQualityLetter(quality)), QUALITY_ORDER.indexOf(normalizeQualityLetter(maximum)))];
 const qualityForIndex = (index, preferences = []) => {
     const requested = preferences.length ? preferences : CARD_SHOP_DEFAULT_QUALITY_SEQUENCE;
     return normalizeQualityLetter(requested[index % requested.length]);
@@ -115,7 +120,7 @@ const profileText = (rng, text) => { const parts = String(text || '').split(/[\/
 const normalizeTarget = (target = {}) => { const raw = Array.isArray(target.categories) && target.categories.length ? target.categories : target.category ? [target.category] : ['all']; const categories = raw.includes('all') ? Object.keys(CATEGORY_KEYS) : unique(raw).map(item => CATEGORY_ALIASES[item] || item).filter(item => CATEGORY_KEYS[item]); const slots = unique(target.slotPreferences || target.slots).filter(item => VALID_SLOTS.includes(item)); const requestedQualities = target.qualityPreferences ?? target.品质偏好 ?? target.qualities ?? target.品质; const qualityPreferences = unique(Array.isArray(requestedQualities) ? requestedQualities : requestedQualities ? [requestedQualities] : []).map(item => String(item).trim().toUpperCase()).filter(item => CARD_QUALITY_KEYS.has(item)); return { categories: categories.length ? categories : Object.keys(CATEGORY_KEYS), slots, qualityPreferences, count: Math.max(0, Math.min(50, Math.round(num(target.count, 0)))), query: String(target.query || '').slice(0, 500), autonomous: Boolean(target.autonomous) }; };
 export { normalizeTarget };
 
-export function emptyCatalog() { return { 血统列表: [], 技能列表: [], 装备列表: [], 道具列表: [], 升级列表: [], 成员商库: {} }; }
+export function emptyCatalog() { return { 血统列表: [], 形态列表: [], 技能列表: [], 装备列表: [], 道具列表: [], 升级列表: [], 成员商库: {} }; }
 const normalizeItem = (item = {}, key, index) => ({ id: String(item.id || `${key}-${index + 1}`), ...deepClone(item) });
 const classifyFlatShopItem = item => {
     if (!item || typeof item !== 'object') return null;
@@ -126,7 +131,7 @@ const classifyFlatShopItem = item => {
     if (item.数量 !== undefined || item.效果 !== undefined || item.道具类型 !== undefined) return '道具列表';
     return null;
 };
-export function normalizeCatalog(value) { const source = value?.商城 && typeof value.商城 === 'object' ? value.商城 : value || {}; const out = emptyCatalog(); for (const key of Object.values(CATEGORY_KEYS)) if (Array.isArray(source[key])) out[key] = source[key].map((item, index) => normalizeItem(item, key, index)); const flat = Array.isArray(source.商品列表) ? source.商品列表 : Array.isArray(source.items) ? source.items : []; flat.forEach(item => { const key = classifyFlatShopItem(item); if (key) out[key].push(normalizeItem(item, key, out[key].length)); }); if (source.成员商库 && typeof source.成员商库 === 'object') out.成员商库 = deepClone(source.成员商库); return out; }
+export function normalizeCatalog(value) { const source = value?.商城 && typeof value.商城 === 'object' ? value.商城 : value || {}; const out = emptyCatalog(); for (const key of CATALOG_LIST_KEYS) if (Array.isArray(source[key])) out[key] = source[key].map((item, index) => normalizeItem(item, key, index)); const flat = Array.isArray(source.商品列表) ? source.商品列表 : Array.isArray(source.items) ? source.items : []; flat.forEach(item => { const key = classifyFlatShopItem(item); if (key) out[key].push(normalizeItem(item, key, out[key].length)); }); if (source.成员商库 && typeof source.成员商库 === 'object') out.成员商库 = deepClone(source.成员商库); return out; }
 const nextId = (prefix, rng) => `${prefix}_${rng.nextUint32().toString(16)}`;
 const bloodlineStats = (budget, rank) => { const ps = {}; let remaining = budget; const spend = cost => { remaining = Math.max(0, remaining - cost); }; const addFlat = (key, cost, maxCount = 999) => { const count = Math.min(maxCount, Math.floor(remaining / cost)); if (count > 0) { ps[key] = (ps[key] || 0) + count; spend(count * cost); } }; const addPool = (key) => { const unit = key === 'HP加成' ? 2 : 5; const value = Math.floor(remaining) * unit; if (value > 0) { ps[key] = (ps[key] || 0) + value; spend(value / unit); } }; if (rank % 4 === 0) { addFlat('DEF加成', 5, Math.max(1, Math.floor(budget / 18))); addPool('HP加成'); } else if (rank % 4 === 1) { addFlat('ATK加成', 5, Math.max(1, Math.floor(budget / 20))); addPool('HP加成'); } else if (rank % 4 === 2) { addFlat('法术ATK加成', 5, Math.max(1, Math.floor(budget / 20))); if (remaining >= 2) { const pct = Math.floor(remaining / 2) * 2; ps.法术强度加成 = (ps.法术强度加成 || 0) + pct; spend(pct / 2); } addPool('MP加成'); } else { addFlat('豁免加成', 3, Math.max(1, Math.floor(budget / 18))); addPool('MP加成'); } return ps; };
 const entityLifeLevel = item => {
@@ -147,13 +152,14 @@ const upgradePassive = (sourceStats, targetBudget, rank, rng) => { const ps = de
 // Card entity rule: 0 hand-held, 1 glove, 2 head, 3 chest, 4 leg,
 // 5 shoes, 6 cape, 7 accessory, 8 world relic.  Type 8 is not a shield.
 const EQUIPMENT_SLOT_BY_TYPE = ['武器', '手套', '头盔', '铠甲', '腿甲', '鞋子', '披风', '饰品', '世界遗物'];
-const upgradeItems = (hero, level, rng, qualityPreferences = []) => {
+const upgradeItems = (hero, level, rng, qualityPreferences = [], maximumQuality = 'SSS') => {
     const list = [];
     let upgradeIndex = 0;
     const add = (source, type) => {
         for (const [name, old] of sourceEntries(source)) {
             if (entityLifeLevel(old) >= level) continue;
-            const quality = qualityPreferences.length ? qualityForIndex(upgradeIndex, qualityPreferences) : nextQuality(old.品质);
+            const requestedQuality = qualityPreferences.length ? qualityForIndex(upgradeIndex, qualityPreferences) : nextQuality(old.品质);
+            const quality = qualityAtMost(requestedQuality, maximumQuality);
             const range = priceRangeForQuality(quality);
             const normal = tieredPrices(rng, range, 1)[0];
             upgradeIndex += 1;
@@ -292,10 +298,23 @@ export function generateShopDraft({ playerLevel = 1, slotPreferences = [], targe
     const generated = emptyCatalog();
     const skillIds = [];
     const has = category => normalized.categories.includes(category);
-    const productQuality = index => qualityForIndex(index, normalized.qualityPreferences);
+    const baseQuality = shopVisionQuality(level);
+    const maximumQuality = nextQuality(baseQuality);
+    const temptationBudget = rng.int(1, 2);
+    let temptationCount = 0;
+    let generatedProductCount = 0;
+    const productQuality = index => {
+        if (normalized.qualityPreferences.length) return qualityAtMost(qualityForIndex(index, normalized.qualityPreferences), maximumQuality);
+        generatedProductCount += 1;
+        if (generatedProductCount % 5 === 0 && temptationCount < temptationBudget) {
+            temptationCount += 1;
+            return maximumQuality;
+        }
+        return baseQuality;
+    };
     const productPrice = quality => tieredPrices(rng, priceRangeForQuality(quality), 1)[0];
 
-    if (has('upgrade')) generated.升级列表 = upgradeItems(hero, level, rng, normalized.qualityPreferences);
+    if (has('upgrade')) generated.升级列表 = upgradeItems(hero, level, rng, normalized.qualityPreferences, maximumQuality);
     if (has('skill')) {
         const count = randomInt(rng, 2, 3);
         generated.技能列表 = Array.from({ length: count }, (_, rank) => {
@@ -355,7 +374,7 @@ export function generateShopDraft({ playerLevel = 1, slotPreferences = [], targe
     for (const key of Object.values(CATEGORY_KEYS)) converted[key] = generated[key].map(convertShopItem);
     const catalog = normalizeCatalog(currentCatalog); for (const key of Object.values(CATEGORY_KEYS)) if (has(Object.keys(CATEGORY_KEYS).find(k => CATEGORY_KEYS[k] === key))) catalog[key] = converted[key];
     const qualitySet = [...new Set(Object.values(converted).flatMap(items => Array.isArray(items) ? items.map(item => normalizeQualityLetter(item.品质, '')) : []).filter(Boolean))];
-    return { catalog, generated: converted, target: normalized, playerLevel: level, playerLifeLevel: lifeLevelRoman(level), qualitySet, qualityPolicy: 'independent', baseQuality: null, priceRange: null, priceRanges: Object.fromEntries(qualitySet.map(quality => [quality, priceRangeForQuality(quality)])), seed: seed256(resolvedSeed), rulesetVersion: SHOP_RULESET_VERSION, rngIndex: rng.index };
+    return { catalog, generated: converted, target: normalized, playerLevel: level, playerLifeLevel: lifeLevelRoman(level), qualitySet, qualityPolicy: 'tavern-shop-vision', baseQuality, priceRange: priceRangeForQuality(baseQuality), priceRanges: Object.fromEntries(qualitySet.map(quality => [quality, priceRangeForQuality(quality)])), seed: seed256(resolvedSeed), rulesetVersion: SHOP_RULESET_VERSION, rngIndex: rng.index };
 }
 
 export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
@@ -381,14 +400,16 @@ export function mergeApiCatalog(draftCatalog, responseCatalog, target) {
 
 export function shopModelPrompt({ draft, target, playerLevel, characterName, query }) {
     const roman = lifeLevelRoman(playerLevel);
+    const baseQuality = shopVisionQuality(playerLevel);
+    const maximumQuality = nextQuality(baseQuality);
     const skillRanges = QUALITY_ORDER.map(quality => `${quality}[技能${CARD_SKILL_ITEM_RANGES[quality].技能伤害[0]}-${CARD_SKILL_ITEM_RANGES[quality].技能伤害[1]}|检定+${CARD_SKILL_ITEM_RANGES[quality].检定修正[0]}-${Number.isFinite(CARD_SKILL_ITEM_RANGES[quality].检定修正[1]) ? CARD_SKILL_ITEM_RANGES[quality].检定修正[1] : '100以上'}|道具HP ${typeof CARD_SKILL_ITEM_RANGES[quality].道具HP === 'string' ? CARD_SKILL_ITEM_RANGES[quality].道具HP : `${CARD_SKILL_ITEM_RANGES[quality].道具HP[0]}-${CARD_SKILL_ITEM_RANGES[quality].道具HP[1]}`}|状态预算${CARD_SKILL_ITEM_RANGES[quality].状态预算}]`).join('、');
     return `你是《轮回战场》V3.2.6 卡片的 forge_shop 文案填充器。你的任务是给服务器草案补全文案，不是重新设计数值。
 
-【生命层级】当前为${roman}。生命层级只表示本体承载、生态位与权限，和商品品质 F–SSS、属性品质、机制品质、最终数值、价格完全独立。严禁把生命层级转换成品质字母或数字形式，也严禁根据生命层级推导商品品质。
+【商城视野】当前玩家层级为${roman}。仅在本次商城生成中，严格遵循原卡视野表（Ⅰ=F，Ⅱ=E……）：本次基础视野为${baseQuality}，最高可展示${maximumQuality}；${maximumQuality}级仅可作为少量诱惑商品。此规则只用于商城，禁止写入角色正文、角色档案或 MVU 的生命层级字段。
 
 【草案数据契约】草案中的每个商品已经由服务器按卡片规则生成并锁定。你必须按原索引/原 id 原样保留：品质、价格、消耗、原始属性、附带技能引用，以及伤害、命中、DEF、MDEF 等数值字段。不得重算、四舍五入、折扣、升级或引用旧记录。你可以只返回需要补全的文案字段；服务器会把文案合并回对应草案，任何未返回字段都以草案为准。
 
-【价格硬规则】价格必须服从商品自身品质，不能服从生命层级：F[10,99]、E[100,999]、D[1000,4999]、C[5000,19999]、B[20000,79999]、A[80000,319999]、S[320000,1270000]、SS[1280000,5110000]、SSS[5120000,+∞]。F 级价格只能是 10–99，100 或更高均为错误。
+【价格硬规则】价格必须服从商品自身品质：F[10,99]、E[100,999]、D[1000,4999]、C[5000,19999]、B[20000,79999]、A[80000,319999]、S[320000,1270000]、SS[1280000,5110000]、SSS[5120000,+∞]。F 级价格只能是 10–99，100 或更高均为错误。
 
 【技能/道具/状态锚点】${skillRanges}。技能伤害写入草案的伤害字段或效果字符串时，必须复制草案值；不要自行生成 2d6、2d10 等不在对应品质区间的旧式数值。效果必须是扁平的“键:字符串”记录，不得嵌套对象或数组。
 
@@ -401,4 +422,131 @@ ${target?.autonomous ? '【自主刷新目标】先输出“刷新目标”，�
 
 【草案快照】
 ${JSON.stringify(draft)}`;
+}
+
+const yamlInline = value => {
+    if (value === undefined || value === null || value === '') return '{}';
+    try { return JSON.stringify(value); } catch (_error) { return '{}'; }
+};
+
+const ownedSummary = (label, entries = {}) => {
+    const source = entries && typeof entries === 'object' ? Object.entries(entries) : [];
+    if (!source.length) return `${label}: 无`;
+    return `${label}:\n${source.map(([name, item]) => {
+        const value = item && typeof item === 'object' ? item : {};
+        const quality = String(value.品质 ?? value.quality ?? '未定');
+        const level = value.层级 ?? value.位阶;
+        const attributes = value.原始属性 ?? value.被动属性 ?? {};
+        const effects = value.效果 ?? value.特效 ?? {};
+        return `  - ${name} [${level ? `层级:${level} | ` : ''}${quality}级 | 属性:${yamlInline(attributes)} | 效果:${yamlInline(effects)} | 描述:${String(value.描述 ?? '').replace(/\s+/g, ' ').slice(0, 300) || '无'}]`;
+    }).join('\n')}`;
+};
+
+const ownedSummaryIfPresent = (label, entries = {}) => {
+    const source = entries && typeof entries === 'object' ? Object.entries(entries) : [];
+    return source.length ? ownedSummary(label, entries) : '';
+};
+
+// Mirrors the user message captured from the original V3.2.6 forge_shop
+// invocation.  Numerical balance belongs to the card rule entries in the
+// system message; this message supplies only the live MVU subject and the
+// player's optional core demand.
+export function tavernShopUserPrompt({ playerLevel, characterName, hero = {}, query }) {
+    const roman = lifeLevelRoman(playerLevel);
+    const identity = Array.isArray(hero.身份) ? hero.身份.filter(Boolean).join('/') : String(hero.身份 ?? hero.阵营 ?? '未定');
+    const race = String(hero.种族 ?? '未定');
+    const currency = hero.空间币 ?? '未定';
+    const demand = String(query || '').trim() || '请基于当前构筑、购买力与权限自主决定本次核心商品需求。';
+    const owned = [
+        ownedSummaryIfPresent('已有血统', hero.血统),
+        ownedSummaryIfPresent('已有技能', hero.技能),
+        ownedSummaryIfPresent('已有装备', hero.装备栏 || hero.装备),
+        ownedSummaryIfPresent('已有道具', hero.道具),
+        ownedSummaryIfPresent('已有形态', hero.形态库),
+    ].filter(Boolean).join('\n');
+    // This template intentionally retains the original examples (including
+    // their uneven example quality/price combinations).  They are model
+    // anchors in the captured Tavern request, not local balancing rules.
+    return `
+【当前购买对象数据】
+本次购买目标: 主角(玩家本人)
+种族: ${race}
+身份: ${identity}
+层级: ${roman}
+空间币: ${currency}${owned ? `\n${owned}` : ''}
+
+【输出结构】
+血统列表:
+  - 名称: 血统名
+    品质: E
+    标签: ["主神空间", "强化"]
+    原始属性: {"力量": "E", "敏捷": "C", "体质": "D", "精神": "D", "魅力": "E"}
+    效果: {体能充沛: 基础生命恢复速度小幅提升}
+    描述: 简短描述
+    价格: 450
+技能列表:
+  - 名称: 技能名
+    品质: F
+    类型: 0
+    标签: ["主神空间", "被动"]
+    效果: {射击校准: 射击检定+5}
+    描述: 简短描述
+    消耗: 无
+    价格: 80
+装备列表:
+  - 名称: 装备名
+    品质: F
+    类型: 0
+    标签: ["主神空间", "科技"]
+    原始属性: {"DEF": "C"}
+    效果: {防弹: 对实弹伤害额外减免2点}
+    描述: 简短描述
+    消耗: 无
+    价格: 50
+道具列表:
+  - 名称: 道具名
+    品质: F
+    类型: 消耗品
+    数量: 3
+    标签: ["主神空间", "辅助"]
+    效果: {急救: 恢复10HP}
+    描述: 简短描述
+    价格: 50
+形态列表:
+  - 名称: 形态名称
+    层级: {按形态自身战斗位格生成，Ⅰ－Ⅸ}
+    消耗: HP/EP/特殊资源
+    状态: 完好
+    标签: ["主神空间", 依赖的道具/血统/来源等]
+    原始属性: {基础属性/衍生属性: 品质}
+    效果: { [词条]: 描述 }
+    技能: {
+     - 名称: 技能名
+       品质: F
+       类型: 0
+       标签: ["主神空间", "被动"]
+       效果: {射击校准: 射击检定+5}
+       描述: 简短描述
+       消耗: 无}
+    描述: 简短描述
+    价格: 300
+升级列表:
+  - 名称: 进阶装备/技能/血统/形态名称 (例: M16A2突击步枪·改)
+    替换目标: 原有物品确切名称 (例: M16A2突击步枪)
+    所属大类: 装备 (必填: 血统/技能/装备/形态)
+    层级: ${roman}
+    品质: E
+    类型: 0
+    标签: ["主神空间", "科技", "升级"]
+    原始属性: {"DEF": "C"}
+    效果: {防弹: 强化减伤效果至4点}
+    描述: 回收旧型号进行重铸升阶后的成品
+    消耗: 无
+    价格: 300
+
+【本次核心商品需求】
+  ${demand}
+
+现在请基于上述核心需求进行精准检索与配套生成（允许部分列表为空），仅输出 YAML:
+`;
 }

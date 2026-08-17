@@ -3,3 +3,19 @@ dist/
 .test/
 *.log
 data/*.sqlite*
+
+# Local-only artifacts (never commit / push)
+temp.txt
+
+# Live test helpers that read the local proxy API key file (temp.txt) or
+# reference machine-local fixture paths.  These are development helpers and
+# are intentionally excluded from the public repository.
+scripts/manual-*.mjs
+scripts/test-combat-ai-20-live.mjs
+scripts/test-izumi-regex.mjs
+scripts/test-last-real-floor-live.mjs
+scripts/test-prompt-alignment.mjs
+scripts/test-prompt-retry.mjs
+scripts/test-story-battle-declaration-live.mjs
+scripts/test-story-declaration-state-live.mjs
+docs/TAVERN_TRACE_ALIGNMENT_20260813.md
